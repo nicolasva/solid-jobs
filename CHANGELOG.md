@@ -4,7 +4,24 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-09-30
+
 ### Added
 
-- Initial Ractor-oriented job client and runtime foundation.
+- Ractor-oriented client, Processor, Scheduler, Heartbeat, and Server runtime.
+- Sidekiq-compatible Redis queue keys and open-source job payload format.
+- Immediate, scheduled, retry, and dead-job handling.
+- At-least-once reservations with atomic journaling, generation-fenced ACK
+  and requeue operations, and crashed-process recovery.
+- `SolidJobs::IntegrityCheck` for lost jobs, orphaned references, invalid
+  reservations, dangling indexes, and impossible duplicate states.
+- `SolidJobs::StartupBarrier`, which preconnects every component before
+  releasing Processors into their fetch loops.
+- Graceful quiet and shutdown handling with requeue of interrupted work.
+- Minitest unit, Redis integration, bounded stress, torture, startup-torture,
+  and soak suites.
+- Reliable-hot-path and CPU-scaling profilers plus the independent Sidekiq
+  comparison benchmark.
 
+[Unreleased]: https://github.com/nicolasva/solid-jobs/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/nicolasva/solid-jobs/releases/tag/v0.1.0

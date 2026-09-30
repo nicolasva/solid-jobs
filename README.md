@@ -12,6 +12,20 @@ SolidJobs and its required gems use pure Ruby and do not require native
 extensions. Hot paths are designed around bounded buffers, reusable immutable
 configuration, and low-allocation command batches.
 
+## Installation
+
+Add SolidJobs 0.1 to your bundle:
+
+```ruby
+gem "solid-jobs", "~> 0.1.0"
+```
+
+Then run:
+
+```sh
+bundle install
+```
+
 ## Delivery semantics
 
 SolidJobs provides **at-least-once** job delivery. A worker atomically moves a
