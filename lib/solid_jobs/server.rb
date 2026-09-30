@@ -27,6 +27,7 @@ module SolidJobs
     def start
       raise Error, "Server is already running" if @started
 
+      warn_ruby34_multi_ractor
       snapshot = Utilities.shareable_copy(
         config.ractor_snapshot.merge(identity: identity, started_at: @started_at),
       )
@@ -223,6 +224,17 @@ module SolidJobs
     end
 
     private
+
+    RUBY34_MULTI_RACTOR_WARNING =
+      "SolidJobs: Ruby %s can deadlock the whole VM on a Ractor GC barrier " \
+      "under multi-Processor load (see docs/reliability.md). Run multi-Ractor " \
+      "servers on Ruby >= 4.0, or use concurrency: 1 (one process per Processor)."
+
+    def warn_ruby34_multi_ractor
+      return if RUBY_VERSION >= "4" || config.concurrency <= 1
+
+      config.logger.warn(format(RUBY34_MULTI_RACTOR_WARNING, RUBY_VERSION))
+    end
 
     # Waits for a component Ractor to return after :stop. Ruby 3.4 can lose
     # the wakeup of a Ractor.receive running in a secondary thread while the

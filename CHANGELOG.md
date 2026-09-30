@@ -4,8 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-10-01
+
 ### Added
 
+- `Server#start` logs a warning on Ruby < 4 when `concurrency > 1`, pointing
+  to the Ruby 3.4 Ractor GC-barrier deadlock and the recommended setups.
 - `Server#stop` is bounded: components get `shutdown_timeout + STOP_GRACE`
   to return, `:stop` is re-sent up to `STOP_RESENDS` times, then the
   component is abandoned with an error log instead of hanging shutdown.

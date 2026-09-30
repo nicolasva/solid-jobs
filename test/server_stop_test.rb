@@ -45,4 +45,26 @@ class ServerStopTest < Minitest::Test
   ensure
     config&.close
   end
+
+  def test_multi_ractor_warning_depends_on_ruby_version_and_concurrency
+    log = StringIO.new
+    config = SolidJobs::Config.new(concurrency: 4)
+    config.logger = Logger.new(log)
+    server = SolidJobs::Server.new(config: config)
+
+    server.send(:warn_ruby34_multi_ractor)
+
+    if RUBY_VERSION < "4"
+      assert_includes log.string, "Run multi-Ractor servers on Ruby >= 4.0"
+    else
+      assert_empty log.string
+    end
+
+    log.truncate(0)
+    config.concurrency = 1
+    server.send(:warn_ruby34_multi_ractor)
+    assert_empty log.string
+  ensure
+    config&.close
+  end
 end

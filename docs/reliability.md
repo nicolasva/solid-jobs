@@ -88,7 +88,8 @@ is exposed; once frozen, neither `Timeout` nor process exit
 Recommendation: **run multi-Ractor SolidJobs servers on Ruby ≥ 4.0**. On
 Ruby 3.4 use the client/API side freely, and prefer one process per
 Processor (`concurrency: 1`) for the server. Server-based stress tests are
-skipped on Ruby < 4 for this reason.
+skipped on Ruby < 4 for this reason, and `Server#start` logs a warning when
+it detects `concurrency > 1` on Ruby < 4.
 
 ### Bounded shutdown
 
