@@ -1,0 +1,8 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "solid_jobs"
+require "solid_jobs/cli"
+
+exit SolidJobs::CLI.new.run
+

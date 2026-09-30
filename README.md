@@ -1,0 +1,139 @@
+# SolidJobs
+
+SolidJobs is a Ractor-oriented Redis background job system for Ruby. It uses
+`solid-redis` for Redis access and keeps mutable clients, pools, middleware,
+and runtime state local to their owning Ractor.
+
+SolidJobs is an independent implementation. It does not depend on or load the
+Sidekiq gem. Its Redis job payloads and queue keys are designed to be
+compatible with the Sidekiq 8 open-source data format.
+
+SolidJobs and its required gems use pure Ruby and do not require native
+extensions. Hot paths are designed around bounded buffers, reusable immutable
+configuration, and low-allocation command batches.
+
+## Delivery semantics
+
+SolidJobs provides **at-least-once** job delivery. A worker atomically moves a
+job from `queue:<name>` to a process reservation list before execution and
+removes it only after a successful ACK. Graceful shutdown requeues unfinished
+jobs; reservations owned by a crashed process are recovered into their
+original queues.
+
+A process can still crash after the application side effect and before the
+ACK. The recovered job will then run again. Jobs must therefore be idempotent
+or implement an application-level deduplication key when duplicate side
+effects are unsafe. SolidJobs does not claim exactly-once execution.
+
+```ruby
+class HardJob
+  include SolidJobs::Job
+
+  solid_jobs_options queue: "critical", retry: 10
+
+  def perform(account_id)
+    Account.find(account_id).recalculate!
+  end
+end
+
+HardJob.perform_async(42)
+HardJob.perform_in(30, 42)
+```
+
+Run workers:
+
+```sh
+bundle exec solid-jobs --require ./config/environment \
+  --concurrency 8 --queue critical,3 --queue default
+```
+
+## Tests
+
+SolidJobs uses Minitest exclusively:
+
+```sh
+# Unit and bounded Redis integration tests
+bundle exec rake test
+
+# Bounded concurrency and multi-process recovery stress
+STRESS_JOBS=10000 bundle exec rake stress
+
+# Reproducible random-fault campaign
+SOLID_JOBS_TORTURE=1 STRESS_JOBS=100000 bundle exec rake torture
+
+# Re-run an exact failure sequence
+SOLID_JOBS_TORTURE=1 STRESS_JOBS=100000 STRESS_SEED=123456 bundle exec rake torture
+
+# Repeated fresh-process RESP/Ractor startup torture
+STARTUP_TORTURE_CYCLES=1000 \
+STARTUP_TORTURE_READERS=100 \
+bundle exec rake startup_torture
+
+# Long-running stability; defaults to 24 hours
+SOLID_JOBS_SOAK=1 SOLID_JOBS_SOAK_SECONDS=86400 bundle exec rake soak
+```
+
+The torture report reconciles enqueued, uniquely completed, duplicate,
+dead, queued, and reserved jobs. Any non-zero `LOST` value fails the test.
+
+Profile the reliable execution path independently from application work:
+
+```sh
+REDIS_URL=redis://127.0.0.1:6379/0 \
+HOT_PATH_JOBS=10000 \
+bundle exec rake benchmark:hot_path
+```
+
+The report separates time and allocations for reservation, payload reuse,
+observability registration, dispatch/perform wrapping, observability cleanup,
+and fenced ACK. Fetch decodes the payload once for both reservation metadata
+and dispatch; its job body is intentionally empty.
+
+Diagnose CPU scaling independently from Redis:
+
+```sh
+CPU_SCALING_JOBS=1000 \
+CPU_SCALING_ITERATIONS=210000 \
+bundle exec rake benchmark:cpu_scaling
+```
+
+This runs the identical CPU loop through pure Ractors and through the
+SolidJobs in-memory dispatch path. Each 1/2/4/8 case uses fresh processes and
+reports execution latency, scaling efficiency, CPU-seconds per 1,000 jobs,
+RSS, allocations, GC time, heap slots, and malloc growth.
+
+## Sidekiq comparison
+
+The separate `benchmark_sidekiq_solid-jobs` bundle runs Sidekiq and SolidJobs
+against the same isolated Redis server. It covers enqueue, bulk enqueue,
+CPU-bound processing, I/O-bound processing, mixed processing, and long-running
+stability. Every measurement runs in a fresh Ruby process; client order
+alternates and the default report uses the median of six repetitions.
+
+The current homogeneous CPU-processing reference uses Ruby 4.0.1,
+Sidekiq 8.1.7, a 210,000-iteration integer workload, and 1,000 jobs per case:
+
+| Concurrency | Sidekiq jobs/s | SolidJobs jobs/s | SolidJobs scaling | Sidekiq CPU-s/1k | SolidJobs CPU-s/1k | Sidekiq RSS | SolidJobs RSS | Sidekiq alloc/job | SolidJobs alloc/job |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 142 | 138 | 100.0% | 6.95 | 7.11 | 41.5 MiB | 72.0 MiB | 129.8 | 89.9 |
+| 2 | 144 | 272 | 98.7% | 6.94 | 7.16 | 41.8 MiB | 77.6 MiB | 117.5 | 81.3 |
+| 4 | 143 | 539 | 97.8% | 6.99 | 7.18 | 41.9 MiB | 71.4 MiB | 111.9 | 77.2 |
+| 8 | 144 | 957 | 86.7% | 6.94 | 8.01 | 42.2 MiB | 69.5 MiB | 108.7 | 75.4 |
+
+At eight concurrency units, SolidJobs reaches 957 jobs/s versus 144 jobs/s
+for one Sidekiq process. This is Ractor parallelism rather than equal CPU
+efficiency: SolidJobs consumes 766% CPU and 8.01 CPU-seconds per 1,000 jobs,
+while Sidekiq consumes 100% CPU and 6.94 CPU-seconds per 1,000 jobs. SolidJobs
+also uses more RSS, but reaches 13.77 jobs/s/MiB versus 3.41 for Sidekiq.
+
+These are local synthetic measurements, not application-capacity claims.
+Queue p95/p99 values in this run use sparse sampling and are excluded from the
+summary until the final latency campaign increases the sample count. Ruby
+3.4.4 eight-Ractor results are also excluded: concurrent TCP/RESP
+initialization triggered a reproducible native crash on the tested Apple
+Silicon environment. Ruby 4.0.1 passed the equivalent reproducer 100/100
+times, and `StartupBarrier` serializes component initialization before
+releasing normal parallel processing.
+
+The project is under active development. The Web UI and commercial Sidekiq
+features are not part of the initial scope.
