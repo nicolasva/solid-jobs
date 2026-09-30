@@ -1,5 +1,11 @@
 # SolidJobs
 
+[![Build Status](https://github.com/nicolasva/solid-jobs/actions/workflows/ci.yml/badge.svg)](https://github.com/nicolasva/solid-jobs/actions/workflows/ci.yml)
+[![Code Climate](https://codeclimate.com/github/nicolasva/solid-jobs/badges/gpa.svg)](https://codeclimate.com/github/nicolasva/solid-jobs)
+[![Gem Version](https://badge.fury.io/rb/solid-jobs.svg)](https://rubygems.org/gems/solid-jobs)
+[![Documentation Status](https://img.shields.io/badge/docs-rubydoc.info-blue.svg)](https://www.rubydoc.info/gems/solid-jobs)
+[![Downloads](https://img.shields.io/gem/dt/solid-jobs.svg)](https://rubygems.org/gems/solid-jobs)
+
 SolidJobs is a Ractor-oriented Redis background job system for Ruby. It uses
 `solid-redis` for Redis access and keeps mutable clients, pools, middleware,
 and runtime state local to their owning Ractor.
