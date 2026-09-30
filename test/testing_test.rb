@@ -25,4 +25,21 @@ class TestingTest < Minitest::Test
     assert_equal 1, count
     assert_equal [["main"]], HardJob.jobs.map { |job| job["args"] }
   end
+
+  # Regression: config and testing mode were thread-local, so jobs enqueued
+  # from a Puma-style worker thread silently went to a default Redis.
+  def test_config_and_mode_are_shared_by_threads_in_the_same_ractor
+    main_config = SolidJobs.config
+
+    seen = Thread.new { [SolidJobs.config, SolidJobs::Testing.mode] }.value
+
+    assert_same main_config, seen[0]
+    assert_equal :fake, seen[1]
+  end
+
+  def test_jobs_enqueued_from_threads_land_in_the_shared_fake_storage
+    Array.new(4) { |index| Thread.new { HardJob.perform_async(index) } }.each(&:join)
+
+    assert_equal [0, 1, 2, 3], HardJob.jobs.map { |job| job["args"].first }.sort
+  end
 end

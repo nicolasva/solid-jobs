@@ -33,8 +33,10 @@ module SolidJobs
 
   module_function
 
+  # Configuration is Ractor-local: every thread and fiber inside a Ractor
+  # shares it, while each Ractor keeps its own isolated configuration.
   def config
-    Thread.current[CONFIG_KEY] ||= Config.new
+    Ractor.current[CONFIG_KEY] ||= Config.new
   end
 
   def configure
@@ -43,13 +45,13 @@ module SolidJobs
   end
 
   def use_config(configuration)
-    Thread.current[CONFIG_KEY]&.close
-    Thread.current[CONFIG_KEY] = configuration
+    Ractor.current[CONFIG_KEY]&.close
+    Ractor.current[CONFIG_KEY] = configuration
   end
 
   def reset!
-    Thread.current[CONFIG_KEY]&.close
-    Thread.current[CONFIG_KEY] = Config.new
+    Ractor.current[CONFIG_KEY]&.close
+    Ractor.current[CONFIG_KEY] = Config.new
   end
 
   def testing!(mode, &block)

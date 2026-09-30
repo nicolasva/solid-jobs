@@ -4,6 +4,20 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-01
+
+### Fixed
+
+- `SolidJobs.config` and the testing mode are now Ractor-local instead of
+  thread-local. Jobs enqueued from threads spawned after configuration (Puma
+  workers, Rails request threads) no longer fall back to a default
+  `localhost:6379` Redis.
+
+### Changed
+
+- `rake stress` no longer runs the Ruby 3.4 concurrent-startup crash
+  reproducer; use `rake startup_torture` explicitly.
+
 ## [0.1.0] - 2026-09-30
 
 ### Added

@@ -6,6 +6,13 @@ require "timeout"
 require "solid_jobs"
 
 module SolidJobsStressHelpers
+  # Real-Redis stress tests must not inherit a `:fake` testing mode left in the
+  # Ractor by unit tests loaded into the same process.
+  def use_real_redis!(config)
+    SolidJobs.testing!(:disable)
+    SolidJobs.use_config(config)
+  end
+
   def eventually(timeout: 10, interval: 0.01)
     deadline = ::Process.clock_gettime(::Process::CLOCK_MONOTONIC) + timeout
 

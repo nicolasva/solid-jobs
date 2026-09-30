@@ -26,7 +26,7 @@ class ConcurrentProcessingTest < Minitest::Test
   def setup
     redis_config = RedisTestServer.config
     @config = SolidJobs::Config.new(redis: redis_config, concurrency: 4)
-    SolidJobs.use_config(@config)
+    use_real_redis!(@config)
     @config.redis_pool.call("FLUSHDB")
     @server = SolidJobs::Server.new(config: @config).start
   end

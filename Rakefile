@@ -19,7 +19,12 @@ Rake::TestTask.new(:stress) do |task|
   task.libs << "lib"
   task.libs << "test"
   task.test_files = FileList["test/stress_test.rb", "test/stress/**/*_test.rb"]
-    .exclude("test/stress/torture_test.rb")
+    .exclude(
+      "test/stress/torture_test.rb",
+      # Native-crash reproducer for concurrent Ractor/RESP startup on Ruby 3.4;
+      # it has its own explicit `startup_torture` task.
+      "test/stress/resp_reader_startup_test.rb",
+    )
   task.warning = true
 end
 

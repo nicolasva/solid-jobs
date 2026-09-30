@@ -67,8 +67,16 @@ BOOTING -> ALL_READY -> RUNNING
 Boot failure is terminal. Already-ready components receive `:abort`, close
 their local resources, and never enter their fetch loops. Cleanup is
 idempotent. Component startup is serialized, avoiding concurrent TCP/RESP
-initialization paths known to crash Ruby 3.4.4 on the tested Apple Silicon
-environment; normal processing remains parallel after `RUNNING`.
+initialization paths known to crash Ruby 3.4 (reproduced on 3.4.4 macOS arm64
+and 3.4.11 Linux x86_64; `rake startup_torture` is the reproducer); normal
+processing remains parallel after `RUNNING`.
+
+## Configuration scope
+
+`SolidJobs.config` and the testing mode are Ractor-local, not thread-local.
+Every thread and fiber inside a Ractor (for example Puma workers or Rails
+request threads) shares the configuration set on that Ractor, while each
+Ractor keeps its own isolated configuration.
 
 ## Integrity auditing
 

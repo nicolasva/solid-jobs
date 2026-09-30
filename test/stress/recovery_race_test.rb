@@ -4,13 +4,15 @@ require_relative "stress_test_helper"
 require_relative "../support/redis_test_server"
 
 class RecoveryRaceTest < Minitest::Test
+  include SolidJobsStressHelpers
+
   RESERVATIONS = Integer(ENV.fetch("STRESS_RECOVERY_JOBS", "1000"))
   RECOVERERS = Integer(ENV.fetch("STRESS_RECOVERERS", "4"))
 
   def setup
     @redis_config = RedisTestServer.config
     @config = SolidJobs::Config.new(redis: @redis_config, concurrency: 1)
-    SolidJobs.use_config(@config)
+    use_real_redis!(@config)
     @config.redis_pool.call("FLUSHDB")
   end
 

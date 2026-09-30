@@ -9,7 +9,7 @@ module SolidJobs
     module_function
 
     def mode
-      Thread.current[MODE_KEY] || :disable
+      Ractor.current[MODE_KEY] || :disable
     end
 
     def testing!(new_mode)
@@ -18,14 +18,14 @@ module SolidJobs
 
       if block_given?
         previous = mode
-        Thread.current[MODE_KEY] = new_mode
+        Ractor.current[MODE_KEY] = new_mode
         begin
           yield
         ensure
-          Thread.current[MODE_KEY] = previous
+          Ractor.current[MODE_KEY] = previous
         end
       else
-        Thread.current[MODE_KEY] = new_mode
+        Ractor.current[MODE_KEY] = new_mode
       end
     end
 
@@ -63,7 +63,7 @@ module SolidJobs
     end
 
     def storage
-      Thread.current[STORAGE_KEY] ||= {}
+      Ractor.current[STORAGE_KEY] ||= {}
     end
   end
 end
