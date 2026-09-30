@@ -2,9 +2,10 @@
 
 source "https://rubygems.org"
 
-gem "base-service", path: "../base-service"
-gem "callback-collection", path: "../callback-collection"
-gem "solid-redis", path: "../solid-redis"
-gem "solid-resp-ractor", path: "../solid-resp-ractor"
+# Use sibling checkouts when developing locally; fall back to rubygems.org in CI.
+%w[base-service callback-collection solid-redis solid-resp-ractor].each do |name|
+  local = File.expand_path("../#{name}", __dir__)
+  gem name, path: local if File.directory?(local)
+end
 
 gemspec
