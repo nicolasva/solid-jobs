@@ -13,6 +13,14 @@ module SolidJobsStressHelpers
     SolidJobs.use_config(config)
   end
 
+  # Ruby 3.4's Ractor scheduler deadlocks the whole VM on a GC barrier under
+  # sustained cross-Ractor `move:` traffic (see
+  # test/support/ractor_barrier_repro.rb and docs/reliability.md). Multi-Ractor
+  # servers are therefore only exercised on Ruby >= 4.0.
+  def skip_multi_ractor_on_ruby34!
+    skip "Ruby 3.4 Ractor GC-barrier deadlock" if RUBY_VERSION < "4"
+  end
+
   def eventually(timeout: 10, interval: 0.01)
     deadline = ::Process.clock_gettime(::Process::CLOCK_MONOTONIC) + timeout
 

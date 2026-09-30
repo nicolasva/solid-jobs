@@ -2,13 +2,20 @@
 
 require "securerandom"
 require "socket"
+require "timeout"
 
 module SolidJobs
   class Server
+    # Extra time granted beyond shutdown_timeout before a component is
+    # considered stuck, and how many times :stop is re-sent before giving up.
+    STOP_GRACE = 5.0
+    STOP_RESENDS = 3
+
     attr_reader :config, :identity, :ractors
 
-    def initialize(config: SolidJobs.config)
+    def initialize(config: SolidJobs.config, stop_grace: STOP_GRACE)
       @config = config
+      @stop_grace = stop_grace
       @ractors = []
       @scheduler = nil
       @heartbeat = nil
@@ -197,10 +204,12 @@ module SolidJobs
 
       @ractors.each { |ractor| ractor.send(:stop) }
       @scheduler&.send(:stop)
-      results = @ractors.map { |ractor| RactorSupport.value(ractor) }
-      RactorSupport.value(@scheduler) if @scheduler
+      results = @ractors.each_with_index.map do |ractor, index|
+        await_termination(ractor, "processor #{index}")
+      end
+      await_termination(@scheduler, "scheduler") if @scheduler
       @heartbeat&.send(:stop)
-      RactorSupport.value(@heartbeat) if @heartbeat
+      await_termination(@heartbeat, "heartbeat") if @heartbeat
       @ractors = []
       @scheduler = nil
       @heartbeat = nil
@@ -211,6 +220,36 @@ module SolidJobs
 
     def running?
       @started
+    end
+
+    private
+
+    # Waits for a component Ractor to return after :stop. Ruby 3.4 can lose
+    # the wakeup of a Ractor.receive running in a secondary thread while the
+    # inbox is busy; a fresh :stop message re-triggers it. If the component
+    # still does not return, it is abandoned so shutdown never hangs forever.
+    def await_termination(ractor, name)
+      deadline = config.shutdown_timeout + @stop_grace
+      resends = 0
+      begin
+        Timeout.timeout(deadline) { RactorSupport.value(ractor) }
+      rescue Timeout::Error
+        if resends < STOP_RESENDS
+          resends += 1
+          config.logger.warn(
+            "SolidJobs #{name} did not stop within #{deadline}s, " \
+            "re-sending :stop (#{resends}/#{STOP_RESENDS})",
+          )
+          begin
+            ractor.send(:stop)
+          rescue Ractor::ClosedError
+            nil
+          end
+          retry
+        end
+        config.logger.error("SolidJobs #{name} did not stop; abandoning it")
+        nil
+      end
     end
 
     def remote_signal

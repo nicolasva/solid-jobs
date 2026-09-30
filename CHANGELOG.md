@@ -4,6 +4,21 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- `Server#stop` is bounded: components get `shutdown_timeout + STOP_GRACE`
+  to return, `:stop` is re-sent up to `STOP_RESENDS` times, then the
+  component is abandoned with an error log instead of hanging shutdown.
+- `test/support/ractor_barrier_repro.rb`: standalone reproducer of the Ruby
+  3.4 Ractor GC-barrier deadlock (no SolidJobs, no Redis).
+
+### Changed
+
+- Server-based stress tests are skipped on Ruby < 4: Ruby 3.4's Ractor
+  scheduler deadlocks the VM on a GC barrier under cross-Ractor `move:`
+  traffic. Multi-Ractor servers are recommended on Ruby ≥ 4.0 (see
+  `docs/reliability.md`). CI jobs now time out after 20 minutes.
+
 ## [0.1.1] - 2026-10-01
 
 ### Fixed

@@ -24,6 +24,7 @@ class ConcurrentProcessingTest < Minitest::Test
   PRODUCERS = Integer(ENV.fetch("STRESS_PRODUCERS", "8"))
 
   def setup
+    skip_multi_ractor_on_ruby34!
     redis_config = RedisTestServer.config
     @config = SolidJobs::Config.new(redis: redis_config, concurrency: 4)
     use_real_redis!(@config)

@@ -71,6 +71,32 @@ initialization paths known to crash Ruby 3.4 (reproduced on 3.4.4 macOS arm64
 and 3.4.11 Linux x86_64; `rake startup_torture` is the reproducer); normal
 processing remains parallel after `RUNNING`.
 
+### Ruby 3.4 Ractor caveat
+
+Ruby 3.4's Ractor scheduler can deadlock the whole VM (main thread included)
+when a GC-triggered `rb_ractor_sched_barrier_start` runs while several
+Ractors exchange `move: true` messages: every thread parks in
+`ractor_sched_barrier_join_wait_locked` and the barrier never completes.
+`test/support/ractor_barrier_repro.rb` reproduces it **without SolidJobs or
+Redis** (one receiver, four senders, 24k moved messages per iteration):
+Ruby 3.4.4 freezes within the first iterations, Ruby 4.0.1 completes 30/30.
+Inside SolidJobs the same traffic pattern is the Processor → Heartbeat
+`:work`/`:done`/`:stats` channel, so any multi-Processor server on Ruby 3.4
+is exposed; once frozen, neither `Timeout` nor process exit
+(`rb_ractor_terminate_all`) can recover.
+
+Recommendation: **run multi-Ractor SolidJobs servers on Ruby ≥ 4.0**. On
+Ruby 3.4 use the client/API side freely, and prefer one process per
+Processor (`concurrency: 1`) for the server. Server-based stress tests are
+skipped on Ruby < 4 for this reason.
+
+### Bounded shutdown
+
+`Server#stop` never waits forever for a component. Each Ractor gets
+`shutdown_timeout + Server::STOP_GRACE` to return after `:stop`; the signal
+is re-sent up to `STOP_RESENDS` times, then the component is abandoned with
+an error log so the process can proceed with shutdown.
+
 ## Configuration scope
 
 `SolidJobs.config` and the testing mode are Ractor-local, not thread-local.

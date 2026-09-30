@@ -149,11 +149,15 @@ also uses more RSS, but reaches 13.77 jobs/s/MiB versus 3.41 for Sidekiq.
 These are local synthetic measurements, not application-capacity claims.
 Queue p95/p99 values in this run use sparse sampling and are excluded from the
 summary until the final latency campaign increases the sample count. Ruby
-3.4.4 eight-Ractor results are also excluded: concurrent TCP/RESP
-initialization triggered a reproducible native crash on the tested Apple
-Silicon environment. Ruby 4.0.1 passed the equivalent reproducer 100/100
-times, and `StartupBarrier` serializes component initialization before
-releasing normal parallel processing.
+3.4.4 eight-Ractor results are also excluded: Ruby 3.4's Ractor scheduler
+crashed (concurrent TCP/RESP initialization, reproduced on macOS arm64 and
+Linux x86_64) or deadlocked VM-wide on a GC barrier under cross-Ractor
+message traffic (`test/support/ractor_barrier_repro.rb` reproduces it without
+SolidJobs).
+Ruby 4.0.1 passed the equivalent reproducers, and `StartupBarrier` serializes
+component initialization before releasing normal parallel processing.
+**Multi-Ractor servers are recommended on Ruby ≥ 4.0**; see
+`docs/reliability.md`.
 
 The project is under active development. The Web UI and commercial Sidekiq
 features are not part of the initial scope.
