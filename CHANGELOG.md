@@ -2,7 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [0.1.3] - 2026-10-01
+
+### Changed
+
+- Require `solid-redis` 1.0.11 and rely on its `solid-resp-ractor` dependency
+  instead of declaring and loading the RESP codec directly.
 
 ## [0.1.2] - 2026-10-01
 
@@ -56,5 +61,7 @@ All notable changes to this project will be documented in this file.
 - Reliable-hot-path and CPU-scaling profilers plus the independent Sidekiq
   comparison benchmark.
 
-[Unreleased]: https://github.com/nicolasva/solid-jobs/compare/v0.1.0...HEAD
+[0.1.3]: https://github.com/nicolasva/solid-jobs/compare/v0.1.2...v0.1.3
+[0.1.2]: https://github.com/nicolasva/solid-jobs/compare/v0.1.1...v0.1.2
+[0.1.1]: https://github.com/nicolasva/solid-jobs/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/nicolasva/solid-jobs/releases/tag/v0.1.0

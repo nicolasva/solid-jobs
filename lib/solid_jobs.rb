@@ -3,7 +3,6 @@
 require "base_service"
 require "callback_collection"
 require "solid_redis"
-require "solid_resp_ractor"
 
 require_relative "solid_jobs/version"
 require_relative "solid_jobs/errors"
