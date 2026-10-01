@@ -131,20 +131,21 @@ stability. Every measurement runs in a fresh Ruby process; client order
 alternates and the default report uses the median of six repetitions.
 
 The current homogeneous CPU-processing reference uses Ruby 4.0.1,
-Sidekiq 8.1.7, a 210,000-iteration integer workload, and 1,000 jobs per case:
+Sidekiq 8.1.7, SolidJobs 0.1.2, a 100,000-iteration integer workload, and
+2,000 jobs per case:
 
 | Concurrency | Sidekiq jobs/s | SolidJobs jobs/s | SolidJobs scaling | Sidekiq CPU-s/1k | SolidJobs CPU-s/1k | Sidekiq RSS | SolidJobs RSS | Sidekiq alloc/job | SolidJobs alloc/job |
 |---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| 1 | 142 | 138 | 100.0% | 6.95 | 7.11 | 41.5 MiB | 72.0 MiB | 129.8 | 89.9 |
-| 2 | 144 | 272 | 98.7% | 6.94 | 7.16 | 41.8 MiB | 77.6 MiB | 117.5 | 81.3 |
-| 4 | 143 | 539 | 97.8% | 6.99 | 7.18 | 41.9 MiB | 71.4 MiB | 111.9 | 77.2 |
-| 8 | 144 | 957 | 86.7% | 6.94 | 8.01 | 42.2 MiB | 69.5 MiB | 108.7 | 75.4 |
+| 1 | 289 | 281 | 100.0% | 3.35 | 3.40 | 41.4 MiB | 81.8 MiB | 117.2 | 84.0 |
+| 2 | 296 | 549 | 97.7% | 3.38 | 3.44 | 41.7 MiB | 83.1 MiB | 116.8 | 79.7 |
+| 4 | 298 | 1,090 | 97.0% | 3.37 | 3.43 | 41.8 MiB | 79.5 MiB | 111.1 | 77.7 |
+| 8 | 298 | 2,053 | 91.4% | 3.36 | 3.67 | 42.4 MiB | 74.1 MiB | 108.1 | 74.3 |
 
-At eight concurrency units, SolidJobs reaches 957 jobs/s versus 144 jobs/s
-for one Sidekiq process. This is Ractor parallelism rather than equal CPU
-efficiency: SolidJobs consumes 766% CPU and 8.01 CPU-seconds per 1,000 jobs,
-while Sidekiq consumes 100% CPU and 6.94 CPU-seconds per 1,000 jobs. SolidJobs
-also uses more RSS, but reaches 13.77 jobs/s/MiB versus 3.41 for Sidekiq.
+At eight concurrency units, SolidJobs reaches 2,053 jobs/s versus 298 jobs/s
+for Sidekiq. This is Ractor parallelism rather than equal CPU efficiency:
+SolidJobs consumes 752.6% CPU and 3.67 CPU-seconds per 1,000 jobs, while
+Sidekiq consumes 100.2% CPU and 3.36 CPU-seconds per 1,000 jobs. SolidJobs
+also uses more RSS, but reaches 27.71 jobs/s/MiB versus 7.03 for Sidekiq.
 
 These are local synthetic measurements, not application-capacity claims.
 Queue p95/p99 values in this run use sparse sampling and are excluded from the
