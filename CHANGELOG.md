@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.4.0] - 2026-10-03
+
+### Changed
+
+- Keep the independent SolidJobs runtime, envelope, `solid_jobs:` keyspace,
+  interceptors, claims, and renamed component vocabulary from 0.3.0.
+- Remaining shared names with other Ruby job libraries are limited to
+  `version.rb`, Rails Active Job adapter contracts (`ActiveJob`,
+  `QueueAdapters`, `enqueue_at`), and generic Ruby methods.
+
 ## [0.3.0] - 2026-10-03
 
 ### Breaking
@@ -19,6 +29,8 @@ All notable changes to this project will be documented in this file.
 - Remove the remaining generic internal constants `ClassMethods`,
   `EmptyQueueError`, and `Shutdown` in favor of `TaskMethods`,
   `NoCapturedTask`, and `ExecutionHalt`.
+- Replace `Node#quiet`, `Node#stop`, and `Node#dump_threads` with
+  `Node#request_control(:pause)`, `:shutdown`, or `:backtraces`.
 
 ### Changed
 
@@ -26,6 +38,8 @@ All notable changes to this project will be documented in this file.
   suite to use the new vocabulary consistently.
 - Keep the SolidJobs task API, envelope, `solid_jobs:` Redis keyspace, claims,
   interceptors, and failure model introduced in 0.2.0.
+- Convert configuration keys using Ruby hash transformations, preserving
+  nested values and leaving the original input unchanged.
 
 ## [0.2.0] - 2026-10-03
 

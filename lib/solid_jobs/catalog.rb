@@ -245,6 +245,12 @@ module SolidJobs
   end
 
   class Node
+    CONTROL_SIGNALS = {
+      pause: "TSTP",
+      shutdown: "TERM",
+      backtraces: "TTIN",
+    }.freeze
+
     attr_reader :identity
 
     def initialize(identity, config: SolidJobs.config)
@@ -283,16 +289,10 @@ module SolidJobs
       Time.at(Float(@attributes["beat"])) if @attributes["beat"]
     end
 
-    def quiet
-      signal("TSTP")
-    end
-
-    def stop
-      signal("TERM")
-    end
-
-    def dump_threads
-      signal("TTIN")
+    def request_control(action)
+      name = CONTROL_SIGNALS.fetch(action)
+      @config.redis_pool.call("LPUSH", Keyspace.node_signals(identity), name)
+      true
     end
 
     def executions
@@ -300,13 +300,6 @@ module SolidJobs
       fields.each_slice(2).map do |executor_id, raw|
         Execution.new(identity, executor_id, raw)
       end
-    end
-
-    private
-
-    def signal(name)
-      @config.redis_pool.call("LPUSH", Keyspace.node_signals(identity), name)
-      true
     end
   end
 

@@ -142,6 +142,18 @@ application-level deduplication when duplicate effects are unsafe.
 See [docs/reliability.md](docs/reliability.md) for the state machine, claim
 fencing, recovery rules, and Ruby Ractor caveats.
 
+## Node control
+
+```ruby
+node = SolidJobs::Nodes.new.first
+node.request_control(:pause)
+node.request_control(:backtraces)
+node.request_control(:shutdown)
+```
+
+Control requests are asynchronous and use the selected node's namespaced Redis
+mailbox. Unknown actions raise `KeyError` without writing a request.
+
 ## Lab
 
 ```ruby

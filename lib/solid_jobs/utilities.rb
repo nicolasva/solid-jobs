@@ -5,20 +5,14 @@ module SolidJobs
     module_function
 
     def stringify_keys(value)
-      case value
-      when Hash
-        value.each_with_object({}) do |(key, nested), result|
-          result[key.to_s] = stringify_keys(nested)
-        end
-      when Array
-        value.map { |nested| stringify_keys(nested) }
-      else
-        value
-      end
+      return stringify_hash_keys(value).transform_values { |nested| stringify_keys(nested) } if value.is_a?(Hash)
+      return value.map { |nested| stringify_keys(nested) } if value.is_a?(Array)
+
+      value
     end
 
     def stringify_hash_keys(hash)
-      hash.each_with_object({}) { |(key, value), result| result[key.to_s] = value }
+      hash.transform_keys(&:to_s)
     end
 
     def shareable_copy(value)

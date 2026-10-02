@@ -133,6 +133,23 @@ class IntegrationTest < Minitest::Test
     assert_equal 2, SolidJobs::Counters.new(config: @config).ready + planned.size
   end
 
+  def test_node_control_requests_use_the_namespaced_mailbox
+    node = SolidJobs::Node.new("control-test", config: @config)
+    mailbox = SolidJobs::Keyspace.node_signals(node.identity)
+
+    {pause: "TSTP", shutdown: "TERM", backtraces: "TTIN"}.each do |action, expected|
+      assert node.request_control(action)
+      assert_equal expected, @config.redis_pool.call("RPOP", mailbox)
+    end
+  end
+
+  def test_unknown_node_control_requests_are_rejected_without_writing
+    node = SolidJobs::Node.new("control-test", config: @config)
+
+    assert_raises(KeyError) { node.request_control(:invalid) }
+    assert_equal 0, @config.redis_pool.call("LLEN", SolidJobs::Keyspace.node_signals(node.identity))
+  end
+
   def test_process_api_observes_and_cleans_heartbeat
     server = SolidJobs::Conductor.new(config: @config).start
     deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 3
