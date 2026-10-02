@@ -2,6 +2,31 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.0] - 2026-10-03
+
+### Breaking
+
+- Rename the runtime components to SolidJobs-specific names:
+  `Config` to `Blueprint`, `Server` to `Conductor`, `Processor` to `Engine`,
+  `CLI` to `Console`, `Testing` to `Lab`, and `Metrics` to `Counters`.
+- Rename the task execution callback from `perform` to `execute_task`.
+- Rename `Task.enqueue_at` to `Task.schedule_at`. The Active Job adapter keeps
+  its Rails-required `enqueue_at` method.
+- Rename the Active Job execution task from `ActiveJob::Wrapper` to
+  `RailsAdapter::AdapterTask`.
+- Rename generic implementation files to match the new component vocabulary.
+  `version.rb` remains unchanged as the standard Ruby gem version entry point.
+- Remove the remaining generic internal constants `ClassMethods`,
+  `EmptyQueueError`, and `Shutdown` in favor of `TaskMethods`,
+  `NoCapturedTask`, and `ExecutionHalt`.
+
+### Changed
+
+- Update the executable, Rails adapter, documentation, benchmarks, and test
+  suite to use the new vocabulary consistently.
+- Keep the SolidJobs task API, envelope, `solid_jobs:` Redis keyspace, claims,
+  interceptors, and failure model introduced in 0.2.0.
+
 ## [0.2.0] - 2026-10-03
 
 ### Breaking
@@ -89,6 +114,7 @@ All notable changes to this project will be documented in this file.
 - Reliable-hot-path and CPU-scaling profilers plus the independent Sidekiq
   comparison benchmark.
 
+[0.3.0]: https://github.com/nicolasva/solid-jobs/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/nicolasva/solid-jobs/compare/v0.1.3...v0.2.0
 [0.1.3]: https://github.com/nicolasva/solid-jobs/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/nicolasva/solid-jobs/compare/v0.1.1...v0.1.2
