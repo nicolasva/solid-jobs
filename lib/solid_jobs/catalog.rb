@@ -3,7 +3,7 @@
 require "json"
 
 module SolidJobs
-  class Metrics
+  class Counters
     attr_reader :config
 
     def initialize(config: SolidJobs.config)

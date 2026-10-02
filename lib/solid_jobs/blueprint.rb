@@ -3,7 +3,7 @@
 require "logger"
 
 module SolidJobs
-  class Config
+  class Blueprint
     DEFAULT_TASK_OPTIONS = {
       "channel" => "default",
       "max_failures" => 25,

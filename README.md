@@ -27,14 +27,14 @@ class RecalculateAccount
 
   task_options channel: "critical", max_failures: 10
 
-  def perform(account_id)
+  def execute_task(account_id)
     Account.find(account_id).recalculate!
   end
 end
 
 RecalculateAccount.enqueue(42)
 RecalculateAccount.enqueue_after(30, 42)
-RecalculateAccount.enqueue_at(Time.now + 300, 42)
+RecalculateAccount.schedule_at(Time.now + 300, 42)
 RecalculateAccount.enqueue_many([[42], [43], [44]])
 ```
 
@@ -131,7 +131,7 @@ override, SolidJobs uses capped exponential backoff with equal jitter.
 ## Delivery semantics
 
 SolidJobs provides **at-least-once** delivery. An executor atomically claims a
-task before execution and completes the claim only after `perform` returns.
+task before execution and completes the claim only after `execute_task` returns.
 Graceful shutdown requeues unfinished tasks. Claims owned by a crashed node are
 recovered into their original channels.
 
@@ -142,7 +142,7 @@ application-level deduplication when duplicate effects are unsafe.
 See [docs/reliability.md](docs/reliability.md) for the state machine, claim
 fencing, recovery rules, and Ruby Ractor caveats.
 
-## Testing
+## Lab
 
 ```ruby
 SolidJobs.testing!(:capture) do

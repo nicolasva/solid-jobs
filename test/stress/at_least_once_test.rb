@@ -8,7 +8,7 @@ class AtLeastOnceStressTest < Minitest::Test
 
   def setup
     redis_config = RedisTestServer.config
-    @config = SolidJobs::Config.new(redis: redis_config, concurrency: 1)
+    @config = SolidJobs::Blueprint.new(redis: redis_config, concurrency: 1)
     use_real_redis!(@config)
     @config.redis_pool.call("FLUSHDB")
   end
@@ -18,7 +18,7 @@ class AtLeastOnceStressTest < Minitest::Test
   end
 
   def test_replayed_task_keeps_the_same_task_id
-    # A dedicated channel keeps this test isolated from any Processor that a
+    # A dedicated channel keeps this test isolated from any Engine that a
     # previous stress test in the same process may still be winding down.
     channel = "at-least-once-#{SecureRandom.hex(4)}"
     task_id = SecureRandom.uuid

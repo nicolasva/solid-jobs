@@ -29,7 +29,7 @@ end
 class SolidJobsCpuScalingTask
   include SolidJobs::Task
 
-  def perform(iterations, seed)
+  def execute_task(iterations, seed)
     CpuScalingWork.run(iterations, seed)
   end
 end
@@ -41,7 +41,7 @@ end
 if %w[protocol direct].include?(MODE)
   raise "CPU_SCALING_REDIS_URL is required for #{MODE}" unless REDIS_URL
 
-  seed_config = SolidJobs::Config.new(
+  seed_config = SolidJobs::Blueprint.new(
     redis: SolidRedis::Config.new(url: REDIS_URL, timeout: 1),
     concurrency: 1,
   )
@@ -68,7 +68,7 @@ jobs_per_ractor = JOBS / CONCURRENCY
 workers = CONCURRENCY.times.map do |worker_index|
   Ractor.new(MODE, jobs_per_ractor, worker_index, REDIS_URL) do |mode, count, index, redis_url|
     if mode == "dispatch"
-      config = SolidJobs::Config.new(concurrency: 1)
+      config = SolidJobs::Blueprint.new(concurrency: 1)
       executor = SolidJobs::Executor.new(redis_config: config.redis_config, config: config)
       payload = {
         "task" => "SolidJobsCpuScalingTask",
@@ -78,7 +78,7 @@ workers = CONCURRENCY.times.map do |worker_index|
       }
     elsif mode == "direct" || mode == "protocol"
       redis = SolidRedis::Config.new(url: redis_url, timeout: 1)
-      config = SolidJobs::Config.new(redis: redis, concurrency: 1)
+      config = SolidJobs::Blueprint.new(redis: redis, concurrency: 1)
       claims = SolidJobs::Claim.new(
         config,
         identity: "cpu-scaling:#{Process.pid}:#{index}",

@@ -5,7 +5,7 @@ require "socket"
 require "timeout"
 
 module SolidJobs
-  class Server
+  class Conductor
     # Extra time granted beyond shutdown_timeout before a component is
     # considered stuck, and how many times :stop is re-sent before giving up.
     STOP_GRACE = 5.0
@@ -25,7 +25,7 @@ module SolidJobs
     end
 
     def start
-      raise Error, "Server is already running" if @started
+      raise Error, "Conductor is already running" if @started
 
       warn_ruby34_multi_ractor
       snapshot = Utilities.shareable_copy(
@@ -38,7 +38,7 @@ module SolidJobs
         local_config = heartbeat = nil
         begin
           started = SolidJobs::StartupBarrier.boot(ready) do
-            local_config = SolidJobs::Config.from_ractor_snapshot(settings)
+            local_config = SolidJobs::Blueprint.from_ractor_snapshot(settings)
             SolidJobs.use_config(local_config)
             heartbeat = SolidJobs::Heartbeat.new(
               local_config,
@@ -119,9 +119,9 @@ module SolidJobs
           local_config = processor = nil
           begin
             started = SolidJobs::StartupBarrier.boot(ready_port) do
-              local_config = SolidJobs::Config.from_ractor_snapshot(settings)
+              local_config = SolidJobs::Blueprint.from_ractor_snapshot(settings)
               SolidJobs.use_config(local_config)
-              processor = SolidJobs::Processor.new(
+              processor = SolidJobs::Engine.new(
                 local_config,
                 identity: settings.fetch(:identity),
                 processor_id: id,
@@ -161,7 +161,7 @@ module SolidJobs
         local_config = scheduler = nil
         begin
           started = SolidJobs::StartupBarrier.boot(ready) do
-            local_config = SolidJobs::Config.from_ractor_snapshot(settings)
+            local_config = SolidJobs::Blueprint.from_ractor_snapshot(settings)
             SolidJobs.use_config(local_config)
             scheduler = SolidJobs::Timer.new(local_config)
             local_config.redis_pool.call("PING")
@@ -227,8 +227,8 @@ module SolidJobs
 
     RUBY34_MULTI_RACTOR_WARNING =
       "SolidJobs: Ruby %s can deadlock the whole VM on a Ractor GC barrier " \
-      "under multi-Processor load (see docs/reliability.md). Run multi-Ractor " \
-      "servers on Ruby >= 4.0, or use concurrency: 1 (one process per Processor)."
+      "under multi-Engine load (see docs/reliability.md). Run multi-Ractor " \
+      "servers on Ruby >= 4.0, or use concurrency: 1 (one process per Engine)."
 
     def warn_ruby34_multi_ractor
       return if RUBY_VERSION >= "4" || config.concurrency <= 1

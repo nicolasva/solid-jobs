@@ -4,7 +4,7 @@ require "optparse"
 require "yaml"
 
 module SolidJobs
-  class CLI
+  class Console
     SIGNALS = %w[INT TERM TSTP TTIN INFO].freeze
 
     def initialize
@@ -16,7 +16,7 @@ module SolidJobs
       load_configuration
       load_application
       apply_options
-      server = Server.new(config: SolidJobs.config).start
+      server = Conductor.new(config: SolidJobs.config).start
       read_io, write_io = IO.pipe
       handlers = install_signal_handlers(write_io)
       wait_for_shutdown(server, read_io)
@@ -38,7 +38,7 @@ module SolidJobs
         options.banner = "Usage: solid-jobs [options]"
         options.on("-r", "--require PATH", "Require an application file") { |value| @options[:require] = value }
         options.on("-C", "--config PATH", "Load YAML configuration") { |value| @options[:config] = value }
-        options.on("-c", "--concurrency N", Integer, "Processor Ractor count") { |value| @options[:concurrency] = value }
+        options.on("-c", "--concurrency N", Integer, "Engine Ractor count") { |value| @options[:concurrency] = value }
         options.on("--channel CHANNEL", "Channel name or name,weight") do |value|
           @options[:channels] << channel(value)
         end

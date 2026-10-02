@@ -9,7 +9,7 @@ module SolidJobs
     attr_reader :config
 
     def initialize(redis_config:, config: nil)
-      @config = config || Config.new(redis: redis_config)
+      @config = config || Blueprint.new(redis: redis_config)
     end
 
     def execute(envelope)
@@ -25,7 +25,7 @@ module SolidJobs
 
       task = Utilities.constantize(task_name).new
       task.task_id = envelope["id"] if task.respond_to?(:task_id=)
-      operation = -> { task.perform(*envelope.fetch("arguments")) }
+      operation = -> { task.execute_task(*envelope.fetch("arguments")) }
       return operation.call if config.execute_interceptors.empty?
 
       config.execute_interceptors.call(Execution.new(task, envelope), &operation)

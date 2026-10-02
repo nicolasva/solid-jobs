@@ -1,11 +1,11 @@
 # frozen_string_literal: true
 
 require_relative "test_helper"
-require "solid_jobs/cli"
+require "solid_jobs/console"
 
 class CLITest < Minitest::Test
   def test_parses_server_options
-    options = SolidJobs::CLI.new.parse(
+    options = SolidJobs::Console.new.parse(
       %w[--concurrency 8 --channel critical,3 --channel default --environment production --timeout 15],
     )
 

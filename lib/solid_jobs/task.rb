@@ -3,7 +3,7 @@
 module SolidJobs
   module Task
     def self.included(base)
-      base.extend(ClassMethods)
+      base.extend(TaskMethods)
       base.include(InstanceMethods)
       base.task_options
     end
@@ -25,7 +25,7 @@ module SolidJobs
       end
     end
 
-    module ClassMethods
+    module TaskMethods
       def task_options(options = nil)
         if options
           merged = current_task_options.merge(Utilities.stringify_keys(options))
@@ -64,16 +64,16 @@ module SolidJobs
       end
 
       def enqueue_after(delay, *arguments)
-        enqueue_at(Time.now.to_f + Float(delay), *arguments)
+        schedule_at(Time.now.to_f + Float(delay), *arguments)
       end
 
-      def enqueue_at(time, *arguments)
+      def schedule_at(time, *arguments)
         timestamp = time.is_a?(Time) ? time.to_f : Float(time)
         publish("task" => self, "arguments" => arguments, "run_at" => timestamp)
       end
 
       def execute(*arguments)
-        Testing.execute(current_task_options.merge("task" => self, "arguments" => arguments))
+        Lab.execute(current_task_options.merge("task" => self, "arguments" => arguments))
       end
 
       def with_options(options)
@@ -81,7 +81,7 @@ module SolidJobs
       end
 
       def captured
-        Testing.captured_for(self)
+        Lab.captured_for(self)
       end
 
       def clear_captured
@@ -90,9 +90,9 @@ module SolidJobs
 
       def execute_next
         envelope = captured.shift
-        raise EmptyQueueError, "No captured task for #{name}" unless envelope
+        raise NoCapturedTask, "No captured task for #{name}" unless envelope
 
-        Testing.execute(envelope)
+        Lab.execute(envelope)
       end
 
       private
@@ -114,17 +114,17 @@ module SolidJobs
         if (delay = @options.delete("delay"))
           enqueue_after(delay, *arguments)
         elsif (time = @options.delete("run_at"))
-          enqueue_at(time, *arguments)
+          schedule_at(time, *arguments)
         else
           publish(arguments)
         end
       end
 
       def enqueue_after(delay, *arguments)
-        enqueue_at(Time.now.to_f + Float(delay), *arguments)
+        schedule_at(Time.now.to_f + Float(delay), *arguments)
       end
 
-      def enqueue_at(time, *arguments)
+      def schedule_at(time, *arguments)
         timestamp = time.is_a?(Time) ? time.to_f : Float(time)
         publish(arguments, "run_at" => timestamp)
       end
@@ -143,5 +143,5 @@ module SolidJobs
     end
   end
 
-  class EmptyQueueError < Error; end
+  class NoCapturedTask < Error; end
 end

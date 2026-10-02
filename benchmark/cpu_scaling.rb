@@ -125,7 +125,7 @@ class CpuScalingComparison
       **Environment:** Ruby #{RUBY_VERSION} (#{RUBY_PLATFORM});
       #{core_topology}; medians of #{@repetitions} fresh processes.
 
-      | Mode | Ractors | jobs/s | Efficiency | perform p50 | perform p95 | perform p99 | reserve p50 | reserve p99 | ACK p50 | ACK p99 | CPU | CPU-s/1000 | Redis cmd/job | Scripts/job | RSS MiB | Alloc/job | Minor GC | Major GC | GC time ms | Live slots Δ | Free slots | malloc bytes |
+      | Mode | Ractors | jobs/s | Efficiency | execution p50 | execution p95 | execution p99 | reserve p50 | reserve p99 | ACK p50 | ACK p99 | CPU | CPU-s/1000 | Redis cmd/job | Scripts/job | RSS MiB | Alloc/job | Minor GC | Major GC | GC time ms | Live slots Δ | Free slots | malloc bytes |
       |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
       #{rows.join("\n")}
     MARKDOWN

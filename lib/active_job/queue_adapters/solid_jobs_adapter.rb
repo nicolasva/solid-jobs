@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 require "solid_jobs"
-require "solid_jobs/active_job"
+require "solid_jobs/rails_adapter"
 
 module ActiveJob
   module QueueAdapters
@@ -28,7 +28,7 @@ module ActiveJob
 
       def push(job, at: nil)
         envelope = {
-          "task" => SolidJobs::ActiveJob::Wrapper,
+          "task" => SolidJobs::RailsAdapter::AdapterTask,
           "wrapped" => job.class.name,
           "channel" => job.queue_name,
           "arguments" => [job.serialize],

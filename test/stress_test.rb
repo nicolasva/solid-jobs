@@ -6,7 +6,7 @@ require_relative "stress/stress_test_helper"
 class StressJob
   include SolidJobs::Task
 
-  def perform(*)
+  def execute_task(*)
   end
 end
 
@@ -20,7 +20,7 @@ class StressTest < Minitest::Test
     counts = Array.new(RACTORS) do |ractor_index|
       Ractor.new(ractor_index) do |index|
         SolidJobs.testing!(:capture)
-        SolidJobs::Testing.clear_all
+        SolidJobs::Lab.clear_all
         StressTest::JOBS_PER_RACTOR.times do |job_index|
           StressJob.enqueue(index, job_index, {"value" => job_index})
         end
@@ -42,17 +42,17 @@ class StressTest < Minitest::Test
 
   def test_repeated_payload_generation_has_bounded_live_heap_growth
     5.times do
-      SolidJobs::Testing.clear_all
+      SolidJobs::Lab.clear_all
       1_000.times { |index| StressJob.enqueue(index) }
     end
     GC.start
     baseline = GC.stat(:heap_live_slots)
 
     20.times do
-      SolidJobs::Testing.clear_all
+      SolidJobs::Lab.clear_all
       1_000.times { |index| StressJob.enqueue(index) }
     end
-    SolidJobs::Testing.clear_all
+    SolidJobs::Lab.clear_all
     GC.start
 
     growth = GC.stat(:heap_live_slots) - baseline

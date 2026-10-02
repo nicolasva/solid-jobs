@@ -7,7 +7,7 @@ class ConcurrentStressJob
   include SolidJobs::Task
   task_options retry: false
 
-  def perform(identifier)
+  def execute_task(identifier)
     SolidJobs.redis do |redis|
       redis.pipelined do |pipeline|
         pipeline.call("SADD", "stress:completed", identifier)
@@ -26,10 +26,10 @@ class ConcurrentProcessingTest < Minitest::Test
   def setup
     skip_multi_ractor_on_ruby34!
     redis_config = RedisTestServer.config
-    @config = SolidJobs::Config.new(redis: redis_config, concurrency: 4)
+    @config = SolidJobs::Blueprint.new(redis: redis_config, concurrency: 4)
     use_real_redis!(@config)
     @config.redis_pool.call("FLUSHDB")
-    @server = SolidJobs::Server.new(config: @config).start
+    @server = SolidJobs::Conductor.new(config: @config).start
   end
 
   def teardown
@@ -59,7 +59,7 @@ class ConcurrentProcessingTest < Minitest::Test
     redis_config = @config.redis_config
     workers = ractor_count.times.map do |worker_id|
       Ractor.new(worker_id, operations, redis_config) do |id, count, redis|
-        local = SolidJobs::Config.new(redis: redis, concurrency: 1)
+        local = SolidJobs::Blueprint.new(redis: redis, concurrency: 1)
         SolidJobs.use_config(local)
         count.times do |index|
           SolidJobs.enqueue("ConcurrentStressJob", ["#{id}:#{index}"])

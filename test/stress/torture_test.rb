@@ -14,7 +14,7 @@ class TortureTest < Minitest::Test
     total = Integer(ENV.fetch("STRESS_JOBS", "100000"))
     concurrency = Integer(ENV.fetch("STRESS_RACTORS", "4"))
     redis_config = RedisTestServer.config
-    config = SolidJobs::Config.new(redis: redis_config, concurrency: 1)
+    config = SolidJobs::Blueprint.new(redis: redis_config, concurrency: 1)
     SolidJobs.use_config(config)
     config.redis_pool.call("FLUSHDB")
     arguments = Array.new(total) { |index| [index] }

@@ -9,7 +9,7 @@ require "solid_jobs"
 class SolidJobsHotPathTask
   include SolidJobs::Task
 
-  def perform(_value)
+  def execute_task(_value)
     nil
   end
 end
@@ -55,11 +55,11 @@ class SolidJobsHotPathProfile
       url: ENV.fetch("REDIS_URL", "redis://127.0.0.1:6379/0"),
       timeout: 1,
     )
-    @config = SolidJobs::Config.new(redis: redis, concurrency: 1)
+    @config = SolidJobs::Blueprint.new(redis: redis, concurrency: 1)
     @identity = "hot-path:#{Process.pid}:#{SecureRandom.hex(6)}"
     @claims = SolidJobs::Claim.new(@config, identity: @identity, processor_id: 0)
     @executor = SolidJobs::Executor.new(redis_config: redis, config: @config)
-    @processor = SolidJobs::Processor.new(
+    @processor = SolidJobs::Engine.new(
       @config,
       identity: @identity,
       processor_id: 0,

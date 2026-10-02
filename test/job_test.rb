@@ -8,7 +8,7 @@ class HardJob
 
   attr_reader :performed
 
-  def perform(*args)
+  def execute_task(*args)
     self.class.performed << args
   end
 

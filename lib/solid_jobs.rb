@@ -11,22 +11,22 @@ require_relative "solid_jobs/keyspace"
 require_relative "solid_jobs/ractor_support"
 require_relative "solid_jobs/startup_barrier"
 require_relative "solid_jobs/interceptor_registry"
-require_relative "solid_jobs/config"
+require_relative "solid_jobs/blueprint"
 require_relative "solid_jobs/publisher"
-require_relative "solid_jobs/testing"
+require_relative "solid_jobs/lab"
 require_relative "solid_jobs/task"
 require_relative "solid_jobs/executor"
 require_relative "solid_jobs/claim"
 require_relative "solid_jobs/failure_policy"
 require_relative "solid_jobs/timer"
-require_relative "solid_jobs/processor"
+require_relative "solid_jobs/engine"
 require_relative "solid_jobs/heartbeat"
 require_relative "solid_jobs/recovery"
 require_relative "solid_jobs/integrity_check"
-require_relative "solid_jobs/server"
-require_relative "solid_jobs/api"
-require_relative "solid_jobs/active_job" if defined?(::ActiveJob::Base)
-require_relative "solid_jobs/rails" if defined?(::Rails::Railtie)
+require_relative "solid_jobs/conductor"
+require_relative "solid_jobs/catalog"
+require_relative "solid_jobs/rails_adapter" if defined?(::ActiveJob::Base)
+require_relative "solid_jobs/railtie" if defined?(::Rails::Railtie)
 
 module SolidJobs
   CONFIG_KEY = :solid_jobs_config
@@ -36,7 +36,7 @@ module SolidJobs
   # Configuration is Ractor-local: every thread and fiber inside a Ractor
   # shares it, while each Ractor keeps its own isolated configuration.
   def config
-    Ractor.current[CONFIG_KEY] ||= Config.new
+    Ractor.current[CONFIG_KEY] ||= Blueprint.new
   end
 
   def configure
@@ -51,11 +51,11 @@ module SolidJobs
 
   def reset!
     Ractor.current[CONFIG_KEY]&.close
-    Ractor.current[CONFIG_KEY] = Config.new
+    Ractor.current[CONFIG_KEY] = Blueprint.new
   end
 
   def testing!(mode, &block)
-    Testing.testing!(mode, &block)
+    Lab.testing!(mode, &block)
   end
 
   def enqueue(task, arguments, channel: "default", **options)

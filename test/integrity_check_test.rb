@@ -7,7 +7,7 @@ class IntegrityCheckTest < Minitest::Test
   def setup
     super
     SolidJobs.testing!(:disable)
-    @config = SolidJobs::Config.new(redis: RedisTestServer.config)
+    @config = SolidJobs::Blueprint.new(redis: RedisTestServer.config)
     @config.redis_pool.call("FLUSHDB")
   end
 

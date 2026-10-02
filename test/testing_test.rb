@@ -7,10 +7,10 @@ class TestingTest < Minitest::Test
     SolidJobs.testing!(:capture)
 
     SolidJobs.testing!(:execute) do
-      assert_equal :execute, SolidJobs::Testing.mode
+      assert_equal :execute, SolidJobs::Lab.mode
     end
 
-    assert_equal :capture, SolidJobs::Testing.mode
+    assert_equal :capture, SolidJobs::Lab.mode
   end
 
   def test_storage_is_ractor_local
@@ -31,7 +31,7 @@ class TestingTest < Minitest::Test
   def test_config_and_mode_are_shared_by_threads_in_the_same_ractor
     main_config = SolidJobs.config
 
-    seen = Thread.new { [SolidJobs.config, SolidJobs::Testing.mode] }.value
+    seen = Thread.new { [SolidJobs.config, SolidJobs::Lab.mode] }.value
 
     assert_same main_config, seen[0]
     assert_equal :capture, seen[1]

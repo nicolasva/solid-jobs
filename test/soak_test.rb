@@ -7,7 +7,7 @@ require_relative "stress/stress_test_helper"
 class SoakJob
   include SolidJobs::Task
 
-  def perform(index)
+  def execute_task(index)
     SolidJobs.config.redis_pool.call("SET", "solid-jobs:soak:last", index)
   end
 end
@@ -21,10 +21,10 @@ class SoakTest < Minitest::Test
     duration = Float(ENV.fetch("SOLID_JOBS_SOAK_SECONDS", "86400"))
     batch_size = Integer(ENV.fetch("SOLID_JOBS_SOAK_BATCH", "100"))
     redis_config = RedisTestServer.config
-    config = SolidJobs::Config.new(redis: redis_config, concurrency: 4)
+    config = SolidJobs::Blueprint.new(redis: redis_config, concurrency: 4)
     SolidJobs.use_config(config)
     config.redis_pool.call("FLUSHDB")
-    server = SolidJobs::Server.new(config: config).start
+    server = SolidJobs::Conductor.new(config: config).start
     deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + duration
     baseline_slots = GC.stat(:heap_live_slots)
     submitted = 0

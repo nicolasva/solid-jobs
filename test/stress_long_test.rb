@@ -6,7 +6,7 @@ require_relative "stress/stress_test_helper"
 class LongStressJob
   include SolidJobs::Task
 
-  def perform(*)
+  def execute_task(*)
   end
 end
 

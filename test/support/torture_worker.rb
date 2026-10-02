@@ -8,7 +8,7 @@ class TortureAccountingJob
   include SolidJobs::Task
   task_options retry: false
 
-  def perform(identifier)
+  def execute_task(identifier)
     SolidJobs.redis do |redis|
       redis.pipelined do |pipeline|
         pipeline.call("HINCRBY", "torture:attempts", task_id, 1)
@@ -21,9 +21,9 @@ class TortureAccountingJob
 end
 
 redis = SolidRedis::Config.new(url: ARGV.fetch(0), timeout: 0.2, reconnect_attempts: 2)
-config = SolidJobs::Config.new(redis: redis, concurrency: Integer(ARGV.fetch(1, "4")))
+config = SolidJobs::Blueprint.new(redis: redis, concurrency: Integer(ARGV.fetch(1, "4")))
 config.shutdown_timeout = 1
 SolidJobs.use_config(config)
-server = SolidJobs::Server.new(config: config).start
+server = SolidJobs::Conductor.new(config: config).start
 sleep
 

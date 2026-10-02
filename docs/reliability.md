@@ -40,7 +40,7 @@ age alone, so a legitimate long-running task is not stolen.
 ## Failure boundaries
 
 - Before claim: the task remains in `solid_jobs:channel:<name>`.
-- After claim or during `perform`: the task remains claimed.
+- After claim or during `execute_task`: the task remains claimed.
 - After the application effect but before completion: recovery replays it.
 - Redis unavailable during completion: the task remains claimed and is replayed.
 - Graceful shutdown: the active task may finish within the configured timeout;
@@ -53,7 +53,7 @@ effects require application-level idempotency.
 ## Startup isolation
 
 The server does not claim work while components are booting. Heartbeat,
-Processor, and Timer Ractors initialize their local configuration and Redis
+Engine, and Timer Ractors initialize their local configuration and Redis
 pool, report `READY` exactly once, and wait behind
 `SolidJobs::StartupBarrier`:
 
@@ -74,14 +74,14 @@ barrier runs while several Ractors exchange moved messages.
 Redis. Ruby 4.0.1 completes the equivalent reproducer.
 
 Run multi-Ractor SolidJobs servers on Ruby >= 4.0. On Ruby 3.4, prefer one
-process per Processor (`concurrency: 1`). Server stress tests are skipped on
-Ruby versions affected by this runtime issue, and `Server#start` warns when it
+process per Engine (`concurrency: 1`). Conductor stress tests are skipped on
+Ruby versions affected by this runtime issue, and `Conductor#start` warns when it
 detects a multi-Ractor configuration there.
 
 ## Bounded shutdown
 
-`Server#stop` never waits forever for a component. Each Ractor gets
-`shutdown_timeout + Server::STOP_GRACE` to return after `:stop`; the signal is
+`Conductor#stop` never waits forever for a component. Each Ractor gets
+`shutdown_timeout + Conductor::STOP_GRACE` to return after `:stop`; the signal is
 re-sent up to `STOP_RESENDS` times before the component is abandoned with an
 error log.
 
@@ -111,7 +111,7 @@ retains it so recovery increments the same attempt sequence.
 
 ## Backpressure and channels
 
-Each Processor owns at most one claim and claims only immediately before
+Each Engine owns at most one claim and claims only immediately before
 execution. A node with concurrency `N` therefore holds at most `N` active
 claims, regardless of channel depth.
 

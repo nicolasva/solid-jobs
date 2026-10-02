@@ -3,7 +3,7 @@
 require "securerandom"
 
 module SolidJobs
-  module Testing
+  module Lab
     MODES = %i[disable capture execute].freeze
     STORAGE_KEY = :solid_jobs_testing_captured
     MODE_KEY = :solid_jobs_testing_mode

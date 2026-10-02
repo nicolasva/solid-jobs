@@ -5,7 +5,7 @@ require_relative "test_helper"
 class ProcessPayloadJob
   include SolidJobs::Task
 
-  def perform(identifier)
+  def execute_task(identifier)
     {
       status: "success",
       job_id: identifier,
@@ -17,7 +17,7 @@ end
 class FailingPayloadJob
   include SolidJobs::Task
 
-  def perform
+  def execute_task
     raise "Application failure"
   end
 end

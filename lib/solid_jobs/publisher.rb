@@ -19,7 +19,7 @@ module SolidJobs
 
     def initialize(config: nil, configuration: nil)
       selected = config || configuration || SolidJobs.config
-      @config = selected.is_a?(SolidRedis::Config) ? Config.new(redis: selected) : selected
+      @config = selected.is_a?(SolidRedis::Config) ? Blueprint.new(redis: selected) : selected
     end
 
     def publish(envelope)
@@ -88,15 +88,15 @@ module SolidJobs
     def persist(envelopes)
       return true if envelopes.empty?
 
-      if defined?(Testing)
-        case Testing.mode
+      if defined?(Lab)
+        case Lab.mode
         when :capture
           envelopes.each do |envelope|
-            Testing.captured_for(Utilities.constantize(envelope.fetch("task"))) << envelope
+            Lab.captured_for(Utilities.constantize(envelope.fetch("task"))) << envelope
           end
           return true
         when :execute
-          envelopes.each { |envelope| Testing.execute(envelope) }
+          envelopes.each { |envelope| Lab.execute(envelope) }
           return true
         end
       end

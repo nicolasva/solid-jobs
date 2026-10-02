@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-require_relative "active_job"
+require_relative "rails_adapter"
 
 if defined?(Rails::Railtie)
   module SolidJobs
@@ -13,4 +13,3 @@ if defined?(Rails::Railtie)
     end
   end
 end
-

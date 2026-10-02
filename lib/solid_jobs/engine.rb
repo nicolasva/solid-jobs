@@ -3,7 +3,7 @@
 require "json"
 
 module SolidJobs
-  class Processor
+  class Engine
     def initialize(config, identity: nil, processor_id: nil, heartbeat: nil)
       @config = config
       @claims = Claim.new(config, identity: identity, processor_id: processor_id)
@@ -46,7 +46,7 @@ module SolidJobs
           register_work(claim, envelope)
           begin
             @executor.execute(envelope)
-          rescue Shutdown
+          rescue ExecutionHalt
             requeue(claim)
             break
           rescue StandardError => error
@@ -73,7 +73,7 @@ module SolidJobs
 
     def interrupt_current
       runner = @state_mutex.synchronize { @runner if @busy }
-      runner&.raise(Shutdown, "SolidJobs shutdown timeout exceeded")
+      runner&.raise(ExecutionHalt, "SolidJobs shutdown timeout exceeded")
     end
 
     private

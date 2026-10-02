@@ -11,7 +11,7 @@ class RecoveryRaceTest < Minitest::Test
 
   def setup
     @redis_config = RedisTestServer.config
-    @config = SolidJobs::Config.new(redis: @redis_config, concurrency: 1)
+    @config = SolidJobs::Blueprint.new(redis: @redis_config, concurrency: 1)
     use_real_redis!(@config)
     @config.redis_pool.call("FLUSHDB")
   end
@@ -37,7 +37,7 @@ class RecoveryRaceTest < Minitest::Test
     processes = Array.new(RECOVERERS) do
       fork do
         redis = SolidRedis::Config.new(url: @redis_config.server_url, timeout: 1)
-        config = SolidJobs::Config.new(redis: redis, concurrency: 1)
+        config = SolidJobs::Blueprint.new(redis: redis, concurrency: 1)
         SolidJobs::Recovery.call(config: config)
         config.close
         exit! 0

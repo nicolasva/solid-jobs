@@ -5,5 +5,5 @@ module SolidJobs
   class InvalidJobError < ArgumentError; end
   class InvalidArgumentError < InvalidJobError; end
   class ConfigurationError < Error; end
-  class Shutdown < Error; end
+  class ExecutionHalt < Error; end
 end

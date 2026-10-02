@@ -7,7 +7,7 @@ All notable changes to this project will be documented in this file.
 ### Breaking
 
 - Replace the previous job API with the independent `SolidJobs::Task` API:
-  `enqueue`, `enqueue_after`, `enqueue_at`, `enqueue_many`, `execute`, and
+  `enqueue`, `enqueue_after`, `schedule_at`, `enqueue_many`, `execute`, and
   `with_options`.
 - Replace the previous payload with a SolidJobs envelope using `id`, `task`,
   `arguments`, `channel`, `run_at`, `created_ms`, and `queued_ms`.
@@ -15,7 +15,7 @@ All notable changes to this project will be documented in this file.
   not read or migrated automatically.
 - Replace middleware chains with `publish_interceptors` and
   `execute_interceptors`, whose interceptors implement `around(context)`.
-- Replace the administrative API with `Metrics`, `Channel`, `StoredTask`,
+- Replace the administrative API with `Counters`, `Channel`, `StoredTask`,
   `PlannedTasks`, `RetryingTasks`, `DiscardedTasks`, `Node`, `Nodes`,
   `Execution`, and `Claims`.
 - Replace queue configuration with channels and the `:weighted`, `:priority`,
@@ -28,7 +28,7 @@ All notable changes to this project will be documented in this file.
   and requeue operations.
 - Failure handling uses `max_failures`, `retry_within`, `retry_delay`, and
   `after_final_failure`.
-- Testing modes are now `:capture` and `:execute`.
+- Lab modes are now `:capture` and `:execute`.
 
 ## [0.1.3] - 2026-10-01
 
@@ -41,9 +41,9 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
-- `Server#start` logs a warning on Ruby < 4 when `concurrency > 1`, pointing
+- `Conductor#start` logs a warning on Ruby < 4 when `concurrency > 1`, pointing
   to the Ruby 3.4 Ractor GC-barrier deadlock and the recommended setups.
-- `Server#stop` is bounded: components get `shutdown_timeout + STOP_GRACE`
+- `Conductor#stop` is bounded: components get `shutdown_timeout + STOP_GRACE`
   to return, `:stop` is re-sent up to `STOP_RESENDS` times, then the
   component is abandoned with an error log instead of hanging shutdown.
 - `test/support/ractor_barrier_repro.rb`: standalone reproducer of the Ruby
@@ -51,7 +51,7 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
-- Server-based stress tests are skipped on Ruby < 4: Ruby 3.4's Ractor
+- Conductor-based stress tests are skipped on Ruby < 4: Ruby 3.4's Ractor
   scheduler deadlocks the VM on a GC barrier under cross-Ractor `move:`
   traffic. Multi-Ractor servers are recommended on Ruby ≥ 4.0 (see
   `docs/reliability.md`). CI jobs now time out after 20 minutes.
@@ -74,7 +74,7 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
-- Ractor-oriented client, Processor, Scheduler, Heartbeat, and Server runtime.
+- Ractor-oriented client, Engine, Scheduler, Heartbeat, and Conductor runtime.
 - Sidekiq-compatible Redis queue keys and open-source job payload format.
 - Immediate, scheduled, retry, and dead-job handling.
 - At-least-once reservations with atomic journaling, generation-fenced ACK

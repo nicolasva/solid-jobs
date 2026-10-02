@@ -2,7 +2,6 @@
 # frozen_string_literal: true
 
 require "solid_jobs"
-require "solid_jobs/cli"
+require "solid_jobs/console"
 
-exit SolidJobs::CLI.new.run
-
+exit SolidJobs::Console.new.run

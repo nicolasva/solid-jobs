@@ -8,7 +8,7 @@ require "rbconfig"
 class RedisResultJob
   include SolidJobs::Task
 
-  def perform(value)
+  def execute_task(value)
     SolidJobs.config.redis_pool.call("SET", "solid-jobs:test-result", value)
   end
 end
@@ -16,7 +16,7 @@ end
 class GracefulJob
   include SolidJobs::Task
 
-  def perform(duration)
+  def execute_task(duration)
     SolidJobs.config.redis_pool.call("SET", "solid-jobs:graceful-started", "1")
     sleep duration
     SolidJobs.config.redis_pool.call("SET", "solid-jobs:graceful-completed", "1")
@@ -25,7 +25,7 @@ class GracefulJob
   class AfterEffectCrashJob
     include SolidJobs::Task
 
-    def perform
+    def execute_task
       SolidJobs.config.redis_pool.pipelined do |pipeline|
         pipeline.call("INCR", "solid-jobs:effect-count")
         pipeline.call("HINCRBY", "solid-jobs:effect-attempts", task_id, 1)
@@ -35,7 +35,7 @@ class GracefulJob
     class AckWindowJob
       include SolidJobs::Task
 
-      def perform
+      def execute_task
         SolidJobs.config.redis_pool.call("INCR", "solid-jobs:ack-effect")
       end
     end
@@ -56,7 +56,7 @@ class IntegrationTest < Minitest::Test
     super
     SolidJobs.testing!(:disable)
     @redis_config = RedisTestServer.config
-    @config = SolidJobs::Config.new(redis: @redis_config, concurrency: 2)
+    @config = SolidJobs::Blueprint.new(redis: @redis_config, concurrency: 2)
     SolidJobs.use_config(@config)
     @config.redis_pool.call("FLUSHDB")
   end
@@ -96,7 +96,7 @@ class IntegrationTest < Minitest::Test
 
   def test_server_processes_job_inside_worker_ractor
     RedisResultJob.enqueue("completed")
-    server = SolidJobs::Server.new(config: @config).start
+    server = SolidJobs::Conductor.new(config: @config).start
     deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 8
 
     until @config.redis_pool.call("GET", "solid-jobs:test-result")
@@ -130,11 +130,11 @@ class IntegrationTest < Minitest::Test
     assert_operator channel.waiting_time, :>=, 0
     assert_equal 1, planned.size
     assert_equal [10], planned.first.arguments
-    assert_equal 2, SolidJobs::Metrics.new(config: @config).ready + planned.size
+    assert_equal 2, SolidJobs::Counters.new(config: @config).ready + planned.size
   end
 
   def test_process_api_observes_and_cleans_heartbeat
-    server = SolidJobs::Server.new(config: @config).start
+    server = SolidJobs::Conductor.new(config: @config).start
     deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 3
     processes = SolidJobs::Nodes.new(config: @config)
     sleep 0.01 while processes.to_a.empty? &&
@@ -174,7 +174,7 @@ class IntegrationTest < Minitest::Test
   end
 
   def test_server_recovers_after_repeated_abrupt_redis_restarts
-    server = SolidJobs::Server.new(config: @config).start
+    server = SolidJobs::Conductor.new(config: @config).start
 
     3.times do |index|
       RedisTestServer.interrupt
@@ -197,7 +197,7 @@ class IntegrationTest < Minitest::Test
   def test_graceful_shutdown_waits_for_running_job
     @config.shutdown_timeout = 2
     GracefulJob.enqueue(0.2)
-    server = SolidJobs::Server.new(config: @config).start
+    server = SolidJobs::Conductor.new(config: @config).start
     wait_until(3) { @config.redis_pool.call("GET", "solid-jobs:graceful-started") == "1" }
 
     server.stop
@@ -209,7 +209,7 @@ class IntegrationTest < Minitest::Test
   def test_shutdown_timeout_interrupts_and_requeues_running_job
     @config.shutdown_timeout = 0.05
     GracefulJob.enqueue(2)
-    server = SolidJobs::Server.new(config: @config).start
+    server = SolidJobs::Conductor.new(config: @config).start
     wait_until(3) { @config.redis_pool.call("GET", "solid-jobs:graceful-started") == "1" }
 
     started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
@@ -269,11 +269,11 @@ class IntegrationTest < Minitest::Test
         RbConfig.ruby,
         script,
         @redis_config.server_url,
-        "after-perform",
+        "after-execution",
         out: File::NULL,
         err: File::NULL,
       )
-      wait_until(5) { @config.redis_pool.call("GET", "solid-jobs:after-perform") == "1" }
+      wait_until(5) { @config.redis_pool.call("GET", "solid-jobs:after-execution") == "1" }
       assert_equal "1", @config.redis_pool.call("GET", "solid-jobs:effect-count")
       assert_equal 1, scan_keys("solid_jobs:node:*:claimed:*").sum { |key| @config.redis_pool.call("LLEN", key) }
 
@@ -283,7 +283,7 @@ class IntegrationTest < Minitest::Test
       SolidJobs::Recovery.call(config: @config)
       recovered = JSON.parse(@config.redis_pool.call("LINDEX", "solid_jobs:channel:default", -1))
       assert_equal job_id, recovered["id"]
-      server = SolidJobs::Server.new(config: @config).start
+      server = SolidJobs::Conductor.new(config: @config).start
       wait_until(5) { @config.redis_pool.call("HGET", "solid-jobs:effect-attempts", job_id) == "2" }
       server.stop
 
@@ -336,7 +336,7 @@ class IntegrationTest < Minitest::Test
           RbConfig.ruby,
           script,
           @redis_config.server_url,
-          "during-perform",
+          "during-execution",
           "4",
           out: File::NULL,
           err: File::NULL,
@@ -366,11 +366,11 @@ class IntegrationTest < Minitest::Test
           timeout: 0.1,
           reconnect_attempts: 0,
         )
-        proxy_config = SolidJobs::Config.new(redis: proxy_redis, concurrency: 1)
+        proxy_config = SolidJobs::Blueprint.new(redis: proxy_redis, concurrency: 1)
         proxy_config.execute_interceptors.use(AckWindowInterceptor)
         SolidJobs.use_config(proxy_config)
         AckWindowJob.enqueue
-        server = SolidJobs::Server.new(config: proxy_config).start
+        server = SolidJobs::Conductor.new(config: proxy_config).start
         wait_until(5) { @config.redis_pool.call("GET", "solid-jobs:ack-window") == "1" }
         proxy.cut!
         sleep 0.4
@@ -394,11 +394,11 @@ class IntegrationTest < Minitest::Test
           timeout: 0.1,
           reconnect_attempts: 0,
         )
-        proxy_config = SolidJobs::Config.new(redis: proxy_redis, concurrency: 1)
+        proxy_config = SolidJobs::Blueprint.new(redis: proxy_redis, concurrency: 1)
         SolidJobs.use_config(proxy_config)
         proxy.drop_next_response_for!("LREM")
         AckWindowJob.enqueue
-        server = SolidJobs::Server.new(config: proxy_config).start
+        server = SolidJobs::Conductor.new(config: proxy_config).start
         wait_until(5) { @config.redis_pool.call("GET", "solid-jobs:ack-effect") == "1" }
         sleep 0.5
         server.stop
@@ -424,7 +424,7 @@ class IntegrationTest < Minitest::Test
             "max_failures" => 0,
           )
         end
-        server = SolidJobs::Server.new(config: @config).start
+        server = SolidJobs::Conductor.new(config: @config).start
         wait_until(3) do
           scan_keys("solid_jobs:node:*:claimed:*").sum { |key| @config.redis_pool.call("LLEN", key) } == 4
         end
