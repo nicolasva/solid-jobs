@@ -35,12 +35,12 @@ class ActiveJobTest < Minitest::Test
     adapter = ActiveJob::QueueAdapters::SolidJobsAdapter.new
 
     adapter.enqueue(job)
-    payload = SolidJobs::ActiveJob::Wrapper.jobs.last
+    payload = SolidJobs::ActiveJob::Wrapper.captured.last
 
-    assert_equal job.provider_job_id, payload["jid"]
-    assert_equal "SolidJobs::ActiveJob::Wrapper", payload["class"]
+    assert_equal job.provider_job_id, payload["id"]
+    assert_equal "SolidJobs::ActiveJob::Wrapper", payload["task"]
     assert_equal "ExampleActiveJob", payload["wrapped"]
-    assert_equal "mailers", payload["queue"]
+    assert_equal "mailers", payload["channel"]
   end
 
   def test_adapter_schedules_wrapper
@@ -50,6 +50,6 @@ class ActiveJobTest < Minitest::Test
 
     adapter.enqueue_at(job, timestamp)
 
-    assert_in_delta timestamp, SolidJobs::ActiveJob::Wrapper.jobs.last["at"], 0.001
+    assert_in_delta timestamp, SolidJobs::ActiveJob::Wrapper.captured.last["run_at"], 0.001
   end
 end

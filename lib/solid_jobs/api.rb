@@ -3,72 +3,68 @@
 require "json"
 
 module SolidJobs
-  class Stats
+  class Metrics
     attr_reader :config
 
     def initialize(config: SolidJobs.config)
       @config = config
     end
 
-    def processed
-      integer("stat:processed")
+    def completed
+      counter(Keyspace::PROCESSED)
     end
 
     def failed
-      integer("stat:failed")
+      counter(Keyspace::FAILED)
     end
 
-    def enqueued
-      queues.sum(&:size)
+    def ready
+      Channel.catalog(config: config).sum(&:size)
     end
 
-    def scheduled_size
-      integer_command("ZCARD", "schedule")
+    def planned
+      cardinality(Keyspace::PLANNED)
     end
 
-    def retry_size
-      integer_command("ZCARD", "retry")
+    def retrying
+      cardinality(Keyspace::RETRIES)
     end
 
-    def dead_size
-      integer_command("ZCARD", "dead")
+    def discarded
+      cardinality(Keyspace::DISCARDED)
     end
 
-    def processes_size
-      integer_command("SCARD", "processes")
+    def nodes
+      Integer(config.redis_pool.call("SCARD", Keyspace::NODES))
     end
 
-    def workers_size
-      ProcessSet.new(config: config).sum(&:busy)
+    def executions
+      Nodes.new(config: config).sum(&:active_count)
     end
 
     def reset
-      config.redis_pool.call("DEL", "stat:processed", "stat:failed")
+      config.redis_pool.call("DEL", Keyspace::PROCESSED, Keyspace::FAILED)
       self
     end
 
     private
 
-    def queues
-      Queue.all(config: config)
-    end
-
-    def integer(key)
+    def counter(key)
       Integer(config.redis_pool.call("GET", key) || 0)
     end
 
-    def integer_command(*command)
-      Integer(config.redis_pool.call(*command))
+    def cardinality(key)
+      Integer(config.redis_pool.call("ZCARD", key))
     end
   end
 
-  class Queue
+  class Channel
     include Enumerable
 
     attr_reader :name
 
-    def self.all(config: SolidJobs.config)
-      Array(config.redis_pool.call("SMEMBERS", "queues")).sort.map do |name|
+    def self.catalog(config: SolidJobs.config)
+      Array(config.redis_pool.call("SMEMBERS", Keyspace::CHANNELS)).sort.map do |name|
         new(name, config: config)
       end
     end
@@ -81,191 +77,180 @@ module SolidJobs
     def each
       return enum_for(:each) unless block_given?
 
-      Array(@config.redis_pool.call("LRANGE", key, 0, -1)).reverse_each do |raw|
-        yield JobRecord.new(raw, config: @config, container: self)
+      Array(@config.redis_pool.call("LRANGE", storage_key, 0, -1)).reverse_each do |raw|
+        yield StoredTask.new(raw, config: @config, owner: self)
       end
     end
 
     def size
-      Integer(@config.redis_pool.call("LLEN", key))
+      Integer(@config.redis_pool.call("LLEN", storage_key))
     end
-    alias_method :length, :size
 
-    def latency
-      raw = @config.redis_pool.call("LINDEX", key, -1)
+    def waiting_time
+      raw = @config.redis_pool.call("LINDEX", storage_key, -1)
       return 0.0 unless raw
 
-      payload = JSON.parse(raw)
-      enqueued_at = payload["enqueued_at"] || payload["created_at"]
-      return 0.0 unless enqueued_at
-
-      [Time.now.to_f - Float(enqueued_at) / 1_000, 0.0].max
+      envelope = JSON.parse(raw)
+      timestamp = envelope["queued_ms"] || envelope["created_ms"]
+      timestamp ? [Time.now.to_f - Float(timestamp) / 1_000, 0.0].max : 0.0
     end
 
-    def clear
-      @config.redis_pool.call("DEL", key)
-      self
-    end
-
-    def delete
+    def purge
       @config.redis_pool.pipelined do |pipeline|
-        pipeline.call("DEL", key)
-        pipeline.call("SREM", "queues", name)
+        pipeline.call("DEL", storage_key)
+        pipeline.call("SREM", Keyspace::CHANNELS, name)
       end
       self
     end
 
     def paused?
-      Array(@config.redis_pool.call("SISMEMBER", "paused", name)).first.to_i == 1
+      Integer(@config.redis_pool.call("SISMEMBER", Keyspace::PAUSED_CHANNELS, name)) == 1
     end
 
     def pause
-      @config.redis_pool.call("SADD", "paused", name)
+      @config.redis_pool.call("SADD", Keyspace::PAUSED_CHANNELS, name)
       self
     end
 
-    def unpause
-      @config.redis_pool.call("SREM", "paused", name)
+    def resume
+      @config.redis_pool.call("SREM", Keyspace::PAUSED_CHANNELS, name)
       self
     end
 
-    private
-
-    def key
-      "queue:#{name}"
+    def storage_key
+      Keyspace.channel(name)
     end
   end
 
-  class JobRecord
-    attr_reader :item, :score
+  class StoredTask
+    attr_reader :envelope, :score
 
-    def initialize(raw, score: nil, config: SolidJobs.config, container: nil)
+    def initialize(raw, score: nil, config: SolidJobs.config, owner: nil)
       @raw = raw
-      @item = JSON.parse(raw)
+      @envelope = JSON.parse(raw)
       @score = Float(score) if score
       @config = config
-      @container = container
+      @owner = owner
     end
 
-    def jid
-      item["jid"]
+    def id
+      envelope["id"]
     end
 
-    def queue
-      item["queue"]
+    def channel
+      envelope["channel"]
     end
 
-    def klass
-      item["class"]
+    def task
+      envelope["task"]
     end
 
-    def args
-      item["args"]
+    def arguments
+      envelope["arguments"]
     end
 
     def created_at
-      milliseconds_time(item["created_at"])
+      millisecond_time(envelope["created_ms"])
     end
 
-    def enqueued_at
-      milliseconds_time(item["enqueued_at"])
+    def queued_at
+      millisecond_time(envelope["queued_ms"])
     end
 
-    def at
+    def due_at
       Time.at(score) if score
     end
 
-    def delete
-      case @container
-      when SortedSet
-        @config.redis_pool.call("ZREM", @container.name, @raw)
-      when Queue
-        @config.redis_pool.call("LREM", "queue:#{@container.name}", 1, @raw)
+    def remove
+      case @owner
+      when TimedTasks
+        @config.redis_pool.call("ZREM", @owner.key, @raw)
+      when Channel
+        @config.redis_pool.call("LREM", @owner.storage_key, 1, @raw)
       else
         false
       end
     end
 
-    def retry
-      delete
-      Client.new(config: @config).push(item)
+    def requeue
+      remove
+      Publisher.new(config: @config).publish(envelope)
     end
 
     private
 
-    def milliseconds_time(value)
+    def millisecond_time(value)
       Time.at(Float(value) / 1_000) if value
     end
   end
 
-  class SortedSet
+  class TimedTasks
     include Enumerable
 
-    attr_reader :name
+    attr_reader :key
 
-    def initialize(name, config: SolidJobs.config)
-      @name = name
+    def initialize(key, config: SolidJobs.config)
+      @key = key
       @config = config
     end
 
     def each
       return enum_for(:each) unless block_given?
 
-      values = Array(@config.redis_pool.call("ZRANGE", name, 0, -1, "WITHSCORES"))
+      values = Array(@config.redis_pool.call("ZRANGE", key, 0, -1, "WITHSCORES"))
       values.each_slice(2) do |raw, score|
-        yield JobRecord.new(raw, score: score, config: @config, container: self)
+        yield StoredTask.new(raw, score: score, config: @config, owner: self)
       end
     end
 
     def size
-      Integer(@config.redis_pool.call("ZCARD", name))
+      Integer(@config.redis_pool.call("ZCARD", key))
     end
-    alias_method :length, :size
 
-    def clear
-      @config.redis_pool.call("DEL", name)
+    def purge
+      @config.redis_pool.call("DEL", key)
       self
     end
 
-    def fetch(*jids)
-      wanted = jids.flatten
-      select { |job| wanted.include?(job.jid) }
+    def locate(*ids)
+      wanted = ids.flatten
+      select { |task| wanted.include?(task.id) }
     end
   end
 
-  class ScheduledSet < SortedSet
+  class PlannedTasks < TimedTasks
     def initialize(config: SolidJobs.config)
-      super("schedule", config: config)
+      super(Keyspace::PLANNED, config: config)
     end
   end
 
-  class RetrySet < SortedSet
+  class RetryingTasks < TimedTasks
     def initialize(config: SolidJobs.config)
-      super("retry", config: config)
+      super(Keyspace::RETRIES, config: config)
     end
 
-    def retry_all
-      each.to_a.each(&:retry)
+    def requeue_all
+      each.to_a.each(&:requeue)
     end
   end
 
-  class DeadSet < SortedSet
+  class DiscardedTasks < TimedTasks
     def initialize(config: SolidJobs.config)
-      super("dead", config: config)
+      super(Keyspace::DISCARDED, config: config)
     end
 
-    def retry_all
-      each.to_a.each(&:retry)
+    def requeue_all
+      each.to_a.each(&:requeue)
     end
   end
 
-  class Process
+  class Node
     attr_reader :identity
 
     def initialize(identity, config: SolidJobs.config)
       @identity = identity
       @config = config
-      fields = Array(@config.redis_pool.call("HGETALL", identity))
+      fields = Array(@config.redis_pool.call("HGETALL", Keyspace.node(identity)))
       @attributes = fields.each_slice(2).to_h
       @info = JSON.parse(@attributes.fetch("info", "{}"))
     end
@@ -278,11 +263,11 @@ module SolidJobs
       Integer(@info["pid"] || 0)
     end
 
-    def queues
-      @info["queues"] || []
+    def channels
+      @info["channels"] || []
     end
 
-    def busy
+    def active_count
       Integer(@attributes["busy"] || 0)
     end
 
@@ -294,15 +279,15 @@ module SolidJobs
       @attributes["quiet"] == "true"
     end
 
-    def beat
+    def last_seen_at
       Time.at(Float(@attributes["beat"])) if @attributes["beat"]
     end
 
-    def quiet!
+    def quiet
       signal("TSTP")
     end
 
-    def stop!
+    def stop
       signal("TERM")
     end
 
@@ -310,22 +295,22 @@ module SolidJobs
       signal("TTIN")
     end
 
-    def workers
-      fields = Array(@config.redis_pool.call("HGETALL", "#{identity}:work"))
-      fields.each_slice(2).map do |processor_id, raw|
-        Work.new(identity, processor_id, raw)
+    def executions
+      fields = Array(@config.redis_pool.call("HGETALL", Keyspace.node_work(identity)))
+      fields.each_slice(2).map do |executor_id, raw|
+        Execution.new(identity, executor_id, raw)
       end
     end
 
     private
 
     def signal(name)
-      @config.redis_pool.call("LPUSH", "#{identity}-signals", name)
+      @config.redis_pool.call("LPUSH", Keyspace.node_signals(identity), name)
       true
     end
   end
 
-  class ProcessSet
+  class Nodes
     include Enumerable
 
     def initialize(config: SolidJobs.config)
@@ -335,44 +320,40 @@ module SolidJobs
     def each
       return enum_for(:each) unless block_given?
 
-      Array(@config.redis_pool.call("SMEMBERS", "processes")).each do |identity|
-        process = Process.new(identity, config: @config)
-        if process.beat
-          yield process
+      Array(@config.redis_pool.call("SMEMBERS", Keyspace::NODES)).each do |identity|
+        node = Node.new(identity, config: @config)
+        if node.last_seen_at
+          yield node
         else
-          @config.redis_pool.call("SREM", "processes", identity)
+          @config.redis_pool.call("SREM", Keyspace::NODES, identity)
         end
       end
     end
-
-    def size
-      count
-    end
   end
 
-  class Work
-    attr_reader :process_id, :processor_id
+  class Execution
+    attr_reader :node_id, :executor_id
 
-    def initialize(process_id, processor_id, raw)
-      @process_id = process_id
-      @processor_id = processor_id
+    def initialize(node_id, executor_id, raw)
+      @node_id = node_id
+      @executor_id = executor_id
       @attributes = JSON.parse(raw)
     end
 
-    def queue
-      @attributes["queue"]
+    def channel
+      @attributes["channel"]
     end
 
-    def payload
-      @attributes["payload"]
+    def envelope
+      @attributes["envelope"]
     end
 
-    def run_at
-      Time.at(Float(@attributes["run_at"]))
+    def started_at
+      Time.at(Float(@attributes["started_at"]))
     end
 
-    def reservation_id
-      @attributes["reservation_id"]
+    def claim_token
+      @attributes["claim_token"]
     end
 
     def attempt
@@ -380,14 +361,14 @@ module SolidJobs
     end
   end
 
-  class Reservation
+  class ClaimInfo
     attr_reader :attributes
 
     def initialize(raw)
       @attributes = JSON.parse(raw)
     end
 
-    %w[job_id reservation_id process_id worker_id queue].each do |name|
+    %w[task_id claim_token node_id executor_id channel].each do |name|
       define_method(name) { attributes[name] }
     end
 
@@ -395,12 +376,12 @@ module SolidJobs
       Integer(attributes["attempt"])
     end
 
-    def reserved_at
-      Time.at(Float(attributes["reserved_at"]))
+    def claimed_at
+      Time.at(Float(attributes["claimed_at"]))
     end
   end
 
-  class ReservationSet
+  class Claims
     include Enumerable
 
     def initialize(config: SolidJobs.config)
@@ -412,13 +393,13 @@ module SolidJobs
 
       keys.each do |key|
         Array(@config.redis_pool.call("HVALS", key)).each do |raw|
-          yield Reservation.new(raw)
+          yield ClaimInfo.new(raw)
         end
       end
     end
 
-    def find_job(job_id)
-      find { |reservation| reservation.job_id == job_id }
+    def find_task(task_id)
+      find { |claim| claim.task_id == task_id }
     end
 
     private
@@ -428,7 +409,7 @@ module SolidJobs
       found = []
       loop do
         cursor, batch = @config.redis_pool.call(
-          "SCAN", cursor, "MATCH", "*:reservations", "COUNT", 100,
+          "SCAN", cursor, "MATCH", "#{Keyspace::PREFIX}:node:*:claims", "COUNT", 100,
         )
         found.concat(batch)
         break if cursor == "0"
@@ -437,21 +418,17 @@ module SolidJobs
     end
   end
 
-  class Workers
+  class Executions
     include Enumerable
 
     def initialize(config: SolidJobs.config)
-      @processes = ProcessSet.new(config: config)
+      @nodes = Nodes.new(config: config)
     end
 
     def each
       return enum_for(:each) unless block_given?
 
-      @processes.each { |process| process.workers.each { |work| yield work } }
-    end
-
-    def size
-      count
+      @nodes.each { |node| node.executions.each { |execution| yield execution } }
     end
   end
 end

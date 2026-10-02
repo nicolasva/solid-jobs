@@ -4,35 +4,35 @@ require "logger"
 
 module SolidJobs
   class Config
-    DEFAULT_JOB_OPTIONS = {
-      "queue" => "default",
-      "retry" => true,
+    DEFAULT_TASK_OPTIONS = {
+      "channel" => "default",
+      "max_failures" => 25,
     }.freeze
 
-    attr_accessor :concurrency, :dead_max_jobs, :dead_timeout, :logger,
+    attr_accessor :concurrency, :discarded_limit, :discarded_retention, :logger,
       :on_complex_arguments, :poll_interval_average, :shutdown_timeout,
       :reliable_fetch, :retry_base_delay, :retry_max_delay
-    attr_reader :client_middleware, :default_job_options, :error_handlers,
-      :redis_config, :server_middleware
+    attr_reader :default_task_options, :error_handlers, :execute_interceptors,
+      :publish_interceptors, :redis_config
 
-    def initialize(redis: nil, concurrency: 5, queues: ["default"])
+    def initialize(redis: nil, concurrency: 5, channels: ["default"])
       @redis_config = redis || SolidRedis.config(url: ENV.fetch("REDIS_URL", "redis://127.0.0.1:6379/0"))
       @concurrency = Integer(concurrency)
-      @queues = normalize_queues(queues)
-      @default_job_options = DEFAULT_JOB_OPTIONS
-      @client_middleware = Middleware::Chain.new
-      @server_middleware = Middleware::Chain.new
+      @channels = normalize_channels(channels)
+      @default_task_options = DEFAULT_TASK_OPTIONS
+      @publish_interceptors = InterceptorRegistry.new
+      @execute_interceptors = InterceptorRegistry.new
       @error_handlers = []
       @lifecycle_callbacks = Hash.new { |hash, event| hash[event] = [] }
       @on_complex_arguments = :raise
       @poll_interval_average = 5.0
       @shutdown_timeout = 25.0
-      @queue_mode = :weighted
+      @channel_order = :weighted
       @reliable_fetch = true
       @retry_base_delay = 15.0
       @retry_max_delay = 3_600.0
-      @dead_max_jobs = 10_000
-      @dead_timeout = 180 * 24 * 60 * 60
+      @discarded_limit = 10_000
+      @discarded_retention = 180 * 24 * 60 * 60
       @logger = Logger.new($stdout)
       @redis_pool = nil
     end
@@ -50,42 +50,42 @@ module SolidJobs
       redis_pool.with { |connection| yield connection }
     end
 
-    def queues
-      @queues.map(&:first)
+    def channels
+      @channels.map(&:first)
     end
 
-    def queues=(values)
-      @queues = normalize_queues(values)
+    def channels=(values)
+      @channels = normalize_channels(values)
     end
 
-    def queue_entries
-      @queues.dup
+    def channel_entries
+      @channels.dup
     end
 
-    def queue_mode
-      @queue_mode
+    def channel_order
+      @channel_order
     end
 
-    def queue_mode=(mode)
+    def channel_order=(mode)
       mode = mode.to_sym
-      unless %i[strict weighted random].include?(mode)
-        raise ArgumentError, "queue_mode must be :strict, :weighted, or :random"
+      unless %i[priority weighted shuffle].include?(mode)
+        raise ArgumentError, "channel_order must be :priority, :weighted, or :shuffle"
       end
 
-      @queue_mode = mode
+      @channel_order = mode
     end
 
-    def strict
-      queue_mode == :strict
+    def prioritized?
+      channel_order == :priority
     end
 
-    def strict=(value)
-      self.queue_mode = value ? :strict : :weighted
+    def prioritized=(value)
+      self.channel_order = value ? :priority : :weighted
     end
 
-    def default_job_options=(options)
-      @default_job_options = Utilities.shareable_copy(
-        DEFAULT_JOB_OPTIONS.merge(Utilities.stringify_keys(options)),
+    def default_task_options=(options)
+      @default_task_options = Utilities.shareable_copy(
+        DEFAULT_TASK_OPTIONS.merge(Utilities.stringify_keys(options)),
       )
     end
 
@@ -111,26 +111,26 @@ module SolidJobs
     end
 
     def inspect
-      "#<#{self.class.name} concurrency=#{concurrency} queues=#{queues.inspect}>"
+      "#<#{self.class.name} concurrency=#{concurrency} channels=#{channels.inspect}>"
     end
 
     def ractor_snapshot
       Utilities.shareable_copy(
         redis_config: redis_config,
         concurrency: concurrency,
-        queues: queue_entries,
-        queue_mode: queue_mode,
+        channels: channel_entries,
+        channel_order: channel_order,
         reliable_fetch: reliable_fetch,
-        default_job_options: default_job_options,
+        default_task_options: default_task_options,
         on_complex_arguments: on_complex_arguments,
         poll_interval_average: poll_interval_average,
         shutdown_timeout: shutdown_timeout,
-        dead_max_jobs: dead_max_jobs,
-        dead_timeout: dead_timeout,
+        discarded_limit: discarded_limit,
+        discarded_retention: discarded_retention,
         retry_base_delay: retry_base_delay,
         retry_max_delay: retry_max_delay,
-        client_middleware: client_middleware.snapshot,
-        server_middleware: server_middleware.snapshot,
+        publish_interceptors: publish_interceptors.export,
+        execute_interceptors: execute_interceptors.export,
       )
     end
 
@@ -138,31 +138,31 @@ module SolidJobs
       config = new(
         redis: snapshot.fetch(:redis_config),
         concurrency: snapshot.fetch(:concurrency),
-        queues: snapshot.fetch(:queues),
+        channels: snapshot.fetch(:channels),
       )
-      config.queue_mode = snapshot.fetch(:queue_mode)
+      config.channel_order = snapshot.fetch(:channel_order)
       config.reliable_fetch = snapshot.fetch(:reliable_fetch)
-      config.default_job_options = snapshot.fetch(:default_job_options)
+      config.default_task_options = snapshot.fetch(:default_task_options)
       config.on_complex_arguments = snapshot.fetch(:on_complex_arguments)
       config.poll_interval_average = snapshot.fetch(:poll_interval_average)
       config.shutdown_timeout = snapshot.fetch(:shutdown_timeout)
-      config.dead_max_jobs = snapshot.fetch(:dead_max_jobs)
-      config.dead_timeout = snapshot.fetch(:dead_timeout)
+      config.discarded_limit = snapshot.fetch(:discarded_limit)
+      config.discarded_retention = snapshot.fetch(:discarded_retention)
       config.retry_base_delay = snapshot.fetch(:retry_base_delay)
       config.retry_max_delay = snapshot.fetch(:retry_max_delay)
-      config.client_middleware.restore(snapshot.fetch(:client_middleware))
-      config.server_middleware.restore(snapshot.fetch(:server_middleware))
+      config.publish_interceptors.import(snapshot.fetch(:publish_interceptors))
+      config.execute_interceptors.import(snapshot.fetch(:execute_interceptors))
       config
     end
 
     private
 
-    def normalize_queues(values)
+    def normalize_channels(values)
       Array(values).map do |value|
         name, weight = value.is_a?(Array) ? value : [value, 1]
         name = String(name)
         weight = Integer(weight)
-        raise ArgumentError, "Queue weight must be positive" unless weight.positive?
+        raise ArgumentError, "Channel weight must be positive" unless weight.positive?
 
         [name.freeze, weight].freeze
       end

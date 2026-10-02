@@ -3,8 +3,8 @@
 require "json"
 
 module SolidJobs
-  class Scheduler
-    SETS = %w[retry schedule].freeze
+  class Timer
+    COLLECTIONS = [Keyspace::RETRIES, Keyspace::PLANNED].freeze
     POP_DUE = <<~LUA.freeze
       local jobs = redis.call("zrange", KEYS[1], "-inf", ARGV[1], "byscore", "limit", 0, 1)
       if jobs[1] then
@@ -15,14 +15,14 @@ module SolidJobs
 
     def initialize(config)
       @config = config
-      @client = Client.new(config: config)
+      @publisher = Publisher.new(config: config)
     end
 
     def enqueue_due(now = Time.now.to_f)
       count = 0
-      SETS.each do |set|
-        while (raw = pop_due(set, now))
-          @client.push(JSON.parse(raw))
+      COLLECTIONS.each do |collection|
+        while (raw = pop_due(collection, now))
+          @publisher.publish(JSON.parse(raw))
           count += 1
         end
       end
@@ -45,8 +45,8 @@ module SolidJobs
 
     private
 
-    def pop_due(set, now)
-      @config.redis_pool.call("EVAL", POP_DUE, 1, set, now)
+    def pop_due(collection, now)
+      @config.redis_pool.call("EVAL", POP_DUE, 1, collection, now)
     end
 
     def randomized_interval

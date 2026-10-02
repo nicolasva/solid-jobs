@@ -5,10 +5,10 @@ require "set"
 
 module SolidJobs
   class IntegrityCheck
-    ACTIVE_SETS = {
-      "schedule" => "SCHEDULED",
-      "retry" => "RETRY",
-      "dead" => "DEAD",
+    ACTIVE_COLLECTIONS = {
+      Keyspace::PLANNED => "PLANNED",
+      Keyspace::RETRIES => "RETRYING",
+      Keyspace::DISCARDED => "DISCARDED",
     }.freeze
 
     Report = Struct.new(
@@ -51,10 +51,10 @@ module SolidJobs
     end
 
     def call
-      read_queues
-      read_sorted_sets
-      reserved = read_reservations
-      validate_reservation_metadata(reserved)
+      read_channels
+      read_timed_collections
+      claimed = read_claimed
+      validate_claim_metadata(claimed)
       @acked.each { |job_id| add_state(job_id, "ACKED", "acknowledged") }
 
       observed = @states.keys.to_set
@@ -71,56 +71,57 @@ module SolidJobs
 
     private
 
-    def read_queues
-      scan("queue:*").each do |key|
+    def read_channels
+      scan("#{Keyspace::PREFIX}:channel:*").each do |key|
         Array(@redis.call("LRANGE", key, 0, -1)).each_with_index do |raw, index|
           add_payload(raw, "READY", "#{key}[#{index}]")
         end
       end
     end
 
-    def read_sorted_sets
-      ACTIVE_SETS.each do |key, state|
+    def read_timed_collections
+      ACTIVE_COLLECTIONS.each do |key, state|
         Array(@redis.call("ZRANGE", key, 0, -1)).each_with_index do |raw, index|
           add_payload(raw, state, "#{key}[#{index}]")
         end
       end
     end
 
-    def read_reservations
-      scan("*:reserved:*").to_h do |key|
+    def read_claimed
+      scan("#{Keyspace::PREFIX}:node:*:claimed:*").to_h do |key|
         records = Array(@redis.call("LRANGE", key, 0, -1)).each_with_index.map do |raw, index|
           payload = parse_payload(raw, "#{key}[#{index}]")
-          add_state(payload["jid"], "RESERVED", "#{key}[#{index}]") if payload
+          add_state(payload["id"], "CLAIMED", "#{key}[#{index}]") if payload
           payload
         end.compact
         [key, records]
       end
     end
 
-    def validate_reservation_metadata(reserved)
-      metadata = reservation_metadata
-      reserved.each do |key, payloads|
-        identity, worker_id = key.split(":reserved:", 2)
-        entry = metadata.delete([identity, worker_id])
+    def validate_claim_metadata(claimed)
+      metadata = claim_metadata
+      claimed.each do |key, payloads|
+        node_key, executor_id = key.split(":claimed:", 2)
+        identity = node_key.delete_prefix("#{Keyspace::PREFIX}:node:")
+        entry = metadata.delete([identity, executor_id])
         if payloads.empty?
-          @invalid_reservations << issue(key, "empty_reserved_list")
+          @invalid_reservations << issue(key, "empty_claimed_list")
         elsif payloads.length > 1
-          @invalid_reservations << issue(key, "multiple_payloads_for_worker")
+          @invalid_reservations << issue(key, "multiple_tasks_for_executor")
         end
         payload = payloads.first
         unless entry
-          @invalid_reservations << issue(key, "missing_metadata", job_id: payload&.[]("jid"))
+          @invalid_reservations << issue(key, "missing_metadata", job_id: payload&.[]("id"))
           next
         end
         next unless payload
 
         attributes = entry.fetch(:attributes)
         {
-          "job_id" => payload["jid"],
-          "process_id" => identity,
-          "worker_id" => worker_id,
-          "queue" => payload["queue"],
+          "task_id" => payload["id"],
+          "node_id" => identity,
+          "executor_id" => executor_id,
+          "channel" => payload["channel"],
         }.each do |field, expected|
           next if attributes[field].to_s == expected.to_s
 
@@ -138,14 +139,16 @@ module SolidJobs
           entry.fetch(:key),
           "metadata_without_payload",
           field: entry.fetch(:field),
-          job_id: entry.fetch(:attributes)["job_id"],
+          job_id: entry.fetch(:attributes)["task_id"],
         )
       end
     end
 
-    def reservation_metadata
-      scan("*:reservations").each_with_object({}) do |key, entries|
-        identity = key.delete_suffix(":reservations")
+    def claim_metadata
+      scan("#{Keyspace::PREFIX}:node:*:claims").each_with_object({}) do |key, entries|
+        identity = key
+          .delete_prefix("#{Keyspace::PREFIX}:node:")
+          .delete_suffix(":claims")
         hash_entries(key).each do |field, raw|
           attributes = parse_json(raw, "#{key}[#{field}]")
           next unless attributes
@@ -160,10 +163,10 @@ module SolidJobs
     end
 
     def dangling_attempts
-      hash_entries("solid-jobs:attempts").filter_map do |job_id, attempt|
+      hash_entries(Keyspace::ATTEMPTS).filter_map do |job_id, attempt|
         next if @states[job_id]&.any? { |location| location.fetch(:state) != "ACKED" }
 
-        {job_id: job_id, attempt: Integer(attempt), index: "solid-jobs:attempts"}
+        {job_id: job_id, attempt: Integer(attempt), index: Keyspace::ATTEMPTS}
       end
     end
 
@@ -177,15 +180,15 @@ module SolidJobs
 
     def add_payload(raw, state, location)
       payload = parse_payload(raw, location)
-      add_state(payload["jid"], state, location) if payload
+      add_state(payload["id"], state, location) if payload
     end
 
     def parse_payload(raw, location)
       payload = parse_json(raw, location)
       return unless payload
-      return payload if payload["jid"]
+      return payload if payload["id"]
 
-      @malformed_payloads << {location: location, error: "missing jid", raw: raw}
+      @malformed_payloads << {location: location, error: "missing id", raw: raw}
       nil
     end
 

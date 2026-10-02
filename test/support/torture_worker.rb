@@ -5,14 +5,14 @@ $LOAD_PATH.unshift(File.expand_path("../../lib", __dir__))
 require "solid_jobs"
 
 class TortureAccountingJob
-  include SolidJobs::Job
-  solid_jobs_options retry: false
+  include SolidJobs::Task
+  task_options retry: false
 
   def perform(identifier)
     SolidJobs.redis do |redis|
       redis.pipelined do |pipeline|
-        pipeline.call("HINCRBY", "torture:attempts", jid, 1)
-        pipeline.call("SADD", "torture:completed", jid)
+        pipeline.call("HINCRBY", "torture:attempts", task_id, 1)
+        pipeline.call("SADD", "torture:completed", task_id)
       end
     end
     GC.start if identifier % 1_000 == 0

@@ -7,17 +7,18 @@ require "solid_redis"
 require_relative "solid_jobs/version"
 require_relative "solid_jobs/errors"
 require_relative "solid_jobs/utilities"
+require_relative "solid_jobs/keyspace"
 require_relative "solid_jobs/ractor_support"
 require_relative "solid_jobs/startup_barrier"
-require_relative "solid_jobs/middleware/chain"
+require_relative "solid_jobs/interceptor_registry"
 require_relative "solid_jobs/config"
-require_relative "solid_jobs/client"
+require_relative "solid_jobs/publisher"
 require_relative "solid_jobs/testing"
-require_relative "solid_jobs/job"
-require_relative "solid_jobs/worker"
-require_relative "solid_jobs/fetch"
-require_relative "solid_jobs/retry_service"
-require_relative "solid_jobs/scheduler"
+require_relative "solid_jobs/task"
+require_relative "solid_jobs/executor"
+require_relative "solid_jobs/claim"
+require_relative "solid_jobs/failure_policy"
+require_relative "solid_jobs/timer"
 require_relative "solid_jobs/processor"
 require_relative "solid_jobs/heartbeat"
 require_relative "solid_jobs/recovery"
@@ -57,22 +58,22 @@ module SolidJobs
     Testing.testing!(mode, &block)
   end
 
-  def enqueue(job_class, args, queue: "default", **options)
-    Client.push(
+  def enqueue(task, arguments, channel: "default", **options)
+    Publisher.publish(
       options.merge(
-        "class" => job_class,
-        "args" => args,
-        "queue" => queue,
+        "task" => task,
+        "arguments" => arguments,
+        "channel" => channel,
       ),
     )
   end
 
-  def enqueue_bulk(job_class, arguments, queue: "default", **options)
-    Client.push_bulk(
+  def enqueue_many(task, argument_sets, channel: "default", **options)
+    Publisher.publish_many(
       options.merge(
-        "class" => job_class,
-        "args" => arguments,
-        "queue" => queue,
+        "task" => task,
+        "arguments" => argument_sets,
+        "channel" => channel,
       ),
     )
   end

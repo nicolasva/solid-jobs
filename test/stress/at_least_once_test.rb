@@ -17,34 +17,34 @@ class AtLeastOnceStressTest < Minitest::Test
     @config.close
   end
 
-  def test_replayed_job_keeps_the_same_job_id
-    # A dedicated queue keeps this test isolated from any Processor that a
+  def test_replayed_task_keeps_the_same_task_id
+    # A dedicated channel keeps this test isolated from any Processor that a
     # previous stress test in the same process may still be winding down.
-    queue = "at-least-once-#{SecureRandom.hex(4)}"
-    job_id = SecureRandom.uuid
+    channel = "at-least-once-#{SecureRandom.hex(4)}"
+    task_id = SecureRandom.uuid
     returned = SolidJobs.enqueue(
       "ConcurrentStressJob",
       ["payload"],
-      queue: queue,
-      job_id: job_id,
+      channel: channel,
+      id: task_id,
     )
-    reserved_key = "#{Socket.gethostname}:999999:dead:reserved:0"
+    identity = "#{Socket.gethostname}:999999:dead"
+    claimed_key = SolidJobs::Keyspace.claimed(identity, 0)
     raw = @config.redis_pool.call(
       "LMOVE",
-      "queue:#{queue}",
-      reserved_key,
+      SolidJobs::Keyspace.channel(channel),
+      claimed_key,
       "RIGHT",
       "LEFT",
     )
-    reserved = JSON.parse(raw)
+    claimed = JSON.parse(raw)
 
-    assert_equal job_id, returned
-    assert_equal job_id, reserved["jid"]
+    assert_equal task_id, returned
+    assert_equal task_id, claimed["id"]
     assert_equal 1, SolidJobs.recovery!
 
-    replay = JSON.parse(@config.redis_pool.call("LINDEX", "queue:#{queue}", -1))
-    assert_equal job_id, replay["jid"]
-    assert_equal reserved, replay
+    replay = JSON.parse(@config.redis_pool.call("LINDEX", SolidJobs::Keyspace.channel(channel), -1))
+    assert_equal task_id, replay["id"]
+    assert_equal claimed, replay
   end
 end
-

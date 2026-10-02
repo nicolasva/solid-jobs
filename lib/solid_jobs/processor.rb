@@ -6,8 +6,8 @@ module SolidJobs
   class Processor
     def initialize(config, identity: nil, processor_id: nil, heartbeat: nil)
       @config = config
-      @fetcher = Fetch.new(config, identity: identity, processor_id: processor_id)
-      @worker = Worker.new(redis_config: config.redis_config, config: config)
+      @claims = Claim.new(config, identity: identity, processor_id: processor_id)
+      @executor = Executor.new(redis_config: config.redis_config, config: config)
       @identity = identity
       @processor_id = processor_id
       @heartbeat = heartbeat
@@ -29,12 +29,12 @@ module SolidJobs
           next
         end
 
-        unit = retrieve
-        next unless unit
+        claim = retrieve
+        next unless claim
 
         receive_commands(control)
         if @stopping || @quiet
-          requeue(unit)
+          requeue(claim)
           break if @stopping
 
           next
@@ -42,19 +42,19 @@ module SolidJobs
 
         begin
           @state_mutex.synchronize { @busy = true }
-          payload = unit.job
-          register_work(unit, payload)
+          envelope = claim.envelope
+          register_work(claim, envelope)
           begin
-            @worker.perform(payload)
+            @executor.execute(envelope)
           rescue Shutdown
-            requeue(unit)
+            requeue(claim)
             break
           rescue StandardError => error
-            RetryService.call(config: @config, payload: payload, error: error)
-            acknowledge(unit)
+            FailurePolicy.call(config: @config, payload: envelope, error: error)
+            complete(claim)
             failed += 1
           else
-            processed += 1 if acknowledge(unit)
+            processed += 1 if complete(claim)
           end
         ensure
           @state_mutex.synchronize { @busy = false }
@@ -78,50 +78,50 @@ module SolidJobs
 
     private
 
-    def acknowledge(unit)
-      acknowledged = unit.acknowledge
-      unless acknowledged
+    def complete(claim)
+      completed = claim.complete
+      unless completed
         @config.logger.warn(
-          "Reservation fencing rejected stale ACK: #{unit.reservation_id}",
+          "Claim fencing rejected stale completion: #{claim.claim_token}",
         )
       end
-      acknowledged
+      completed
     rescue SolidRedis::ConnectionError => error
       @fetcher.connection_failed!
       @config.logger.warn(
-        "Redis ACK failed; reserved job will be replayed: #{error.class}: #{error.message}",
+        "Redis completion failed; claimed task will be replayed: #{error.class}: #{error.message}",
       )
       false
     end
 
-    def requeue(unit)
-      requeued = unit.requeue
+    def requeue(claim)
+      requeued = claim.requeue
       unless requeued
         @config.logger.warn(
-          "Reservation fencing rejected stale requeue: #{unit.reservation_id}",
+          "Claim fencing rejected stale requeue: #{claim.claim_token}",
         )
       end
       requeued
     end
 
     def retrieve
-      @fetcher.retrieve
+      @claims.next
     rescue SolidRedis::ConnectionError => error
-      @fetcher.connection_failed!
-      @config.logger.warn("Redis fetch failed, retrying: #{error.class}: #{error.message}")
+      @claims.connection_failed!
+      @config.logger.warn("Redis claim failed, retrying: #{error.class}: #{error.message}")
       sleep 0.1
       nil
     end
 
-    def register_work(unit, payload)
+    def register_work(claim, envelope)
       return unless @identity
 
       work = JSON.generate(
-        "queue" => unit.queue,
-        "payload" => payload,
-        "run_at" => Time.now.to_f,
-        "reservation_id" => unit.reservation_id,
-        "attempt" => unit.attempt,
+        "channel" => claim.channel,
+        "envelope" => envelope,
+        "started_at" => Time.now.to_f,
+        "claim_token" => claim.claim_token,
+        "attempt" => claim.attempt,
       )
       send_heartbeat(:work, @processor_id, work)
     end

@@ -21,7 +21,7 @@ class TortureTest < Minitest::Test
     expected_job_ids = SolidJobs.enqueue_bulk(
       "TortureAccountingJob",
       arguments,
-      queue: "default",
+      channel: "default",
       batch_size: 1_000,
     )
     proxy = RedisFaultProxy.new(redis_config.server_url).start
@@ -96,7 +96,7 @@ class TortureTest < Minitest::Test
 
   def terminally_accounted(config)
     unique = config.redis_pool.call("SCARD", "torture:completed")
-    dead = SolidJobs::DeadSet.new(config: config).size
+    dead = SolidJobs::DiscardedTasks.new(config: config).size
     unique + dead
   end
 
@@ -104,8 +104,8 @@ class TortureTest < Minitest::Test
     unique = config.redis_pool.call("SCARD", "torture:completed")
     attempts = Array(config.redis_pool.call("HGETALL", "torture:attempts"))
       .each_slice(2).to_h.transform_values!(&:to_i)
-    dead = SolidJobs::DeadSet.new(config: config).size
-    queued = SolidJobs::Queue.all(config: config).sum(&:size)
+    dead = SolidJobs::DiscardedTasks.new(config: config).size
+    queued = SolidJobs::Channel.catalog(config: config).sum(&:size)
     reserved = reserved_keys(config).sum { |key| config.redis_pool.call("LLEN", key) }
     {
       enqueued: enqueued,
@@ -119,10 +119,10 @@ class TortureTest < Minitest::Test
   end
 
   def active_jobs(config)
-    queued = SolidJobs::Queue.all(config: config).sum(&:size)
+    queued = SolidJobs::Channel.catalog(config: config).sum(&:size)
     reserved = reserved_keys(config).sum { |key| config.redis_pool.call("LLEN", key) }
-    scheduled = SolidJobs::ScheduledSet.new(config: config).size
-    retries = SolidJobs::RetrySet.new(config: config).size
+    scheduled = SolidJobs::PlannedTasks.new(config: config).size
+    retries = SolidJobs::RetryingTasks.new(config: config).size
     queued + reserved + scheduled + retries
   end
 
@@ -130,7 +130,7 @@ class TortureTest < Minitest::Test
     cursor = "0"
     keys = []
     loop do
-      cursor, found = config.redis_pool.call("SCAN", cursor, "MATCH", "*:reserved:*")
+      cursor, found = config.redis_pool.call("SCAN", cursor, "MATCH", "solid_jobs:node:*:claimed:*")
       keys.concat(found)
       break if cursor == "0"
     end

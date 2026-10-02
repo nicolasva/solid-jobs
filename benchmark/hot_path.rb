@@ -6,8 +6,8 @@ require "json"
 require "securerandom"
 require "solid_jobs"
 
-class SolidJobsHotPathJob
-  include SolidJobs::Job
+class SolidJobsHotPathTask
+  include SolidJobs::Task
 
   def perform(_value)
     nil
@@ -57,8 +57,8 @@ class SolidJobsHotPathProfile
     )
     @config = SolidJobs::Config.new(redis: redis, concurrency: 1)
     @identity = "hot-path:#{Process.pid}:#{SecureRandom.hex(6)}"
-    @fetch = SolidJobs::Fetch.new(@config, identity: @identity, processor_id: 0)
-    @worker = SolidJobs::Worker.new(redis_config: redis, config: @config)
+    @claims = SolidJobs::Claim.new(@config, identity: @identity, processor_id: 0)
+    @executor = SolidJobs::Executor.new(redis_config: redis, config: @config)
     @processor = SolidJobs::Processor.new(
       @config,
       identity: @identity,
@@ -82,33 +82,33 @@ class SolidJobsHotPathProfile
   private
 
   def execute_once
-    unit = @fetch.retrieve
-    payload = unit.job
-    @processor.send(:register_work, unit, payload)
-    @worker.perform(payload)
+    claim = @claims.next
+    envelope = claim.envelope
+    @processor.send(:register_work, claim, envelope)
+    @executor.execute(envelope)
     @processor.send(:clear_work)
-    raise "Warmup ACK was fenced" unless unit.acknowledge
+    raise "Warmup completion was fenced" unless claim.complete
   end
 
   def profile_once(stats)
     allocated = GC.stat(:total_allocated_objects)
     started = monotonic_time
-    unit = @fetch.retrieve
+    claim = @claims.next
     stats.fetch(:reserve).record(started, allocated)
 
     allocated = GC.stat(:total_allocated_objects)
     started = monotonic_time
-    payload = unit.job
+    envelope = claim.envelope
     stats.fetch(:deserialize).record(started, allocated)
 
     allocated = GC.stat(:total_allocated_objects)
     started = monotonic_time
-    @processor.send(:register_work, unit, payload)
+    @processor.send(:register_work, claim, envelope)
     stats.fetch(:metrics_register).record(started, allocated)
 
     allocated = GC.stat(:total_allocated_objects)
     started = monotonic_time
-    @worker.perform(payload)
+    @executor.execute(envelope)
     stats.fetch(:dispatch_perform_wrapper).record(started, allocated)
 
     allocated = GC.stat(:total_allocated_objects)
@@ -118,9 +118,9 @@ class SolidJobsHotPathProfile
 
     allocated = GC.stat(:total_allocated_objects)
     started = monotonic_time
-    acknowledged = unit.acknowledge
+    completed = claim.complete
     stats.fetch(:ack).record(started, allocated)
-    raise "ACK was rejected by reservation fencing" unless acknowledged
+    raise "Completion was rejected by claim fencing" unless completed
   end
 
   def seed(count)
@@ -128,25 +128,25 @@ class SolidJobsHotPathProfile
     (0...count).each_slice(1_000) do |indices|
       payloads = indices.map do |index|
         JSON.generate(
-          "class" => "SolidJobsHotPathJob",
-          "args" => [index],
-          "queue" => "default",
-          "jid" => format("%024x", index),
-          "retry" => false,
-          "created_at" => now,
-          "enqueued_at" => now,
+          "task" => "SolidJobsHotPathTask",
+          "arguments" => [index],
+          "channel" => "default",
+          "id" => format("%024x", index),
+          "max_failures" => 0,
+          "created_ms" => now,
+          "queued_ms" => now,
         )
       end
-      redis.call("LPUSH", "queue:default", *payloads)
+      redis.call("LPUSH", "solid_jobs:channel:default", *payloads)
     end
   end
 
   def assert_clean
     checks = {
-      ready: redis.call("LLEN", "queue:default"),
-      reserved: redis.call("LLEN", "#{@identity}:reserved:0"),
-      reservations: redis.call("HLEN", "#{@identity}:reservations"),
-      attempts: redis.call("HLEN", "solid-jobs:attempts"),
+      ready: redis.call("LLEN", "solid_jobs:channel:default"),
+      claimed: redis.call("LLEN", SolidJobs::Keyspace.claimed(@identity, 0)),
+      claims: redis.call("HLEN", SolidJobs::Keyspace.claims(@identity)),
+      attempts: redis.call("HLEN", SolidJobs::Keyspace::ATTEMPTS),
     }
     dirty = checks.reject { |_, count| count.zero? }
     raise "Hot-path profile left Redis state behind: #{dirty.inspect}" unless dirty.empty?

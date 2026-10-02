@@ -21,37 +21,39 @@ module SolidJobs
         "hostname" => Socket.gethostname,
         "pid" => ::Process.pid,
         "started_at" => @started_at,
-        "queues" => @config.queues,
+        "channels" => @config.channels,
         "labels" => [],
         "identity" => @identity,
       }
-      busy = @config.redis_pool.call("HLEN", "#{@identity}:work")
+      node_key = Keyspace.node(@identity)
+      work_key = Keyspace.node_work(@identity)
+      busy = @config.redis_pool.call("HLEN", work_key)
       @config.redis_pool.pipelined do |pipeline|
-        pipeline.call("INCRBY", "stat:processed", processed) if processed.positive?
-        pipeline.call("INCRBY", "stat:failed", failed) if failed.positive?
-        pipeline.call("SADD", "processes", @identity)
+        pipeline.call("INCRBY", Keyspace::PROCESSED, processed) if processed.positive?
+        pipeline.call("INCRBY", Keyspace::FAILED, failed) if failed.positive?
+        pipeline.call("SADD", Keyspace::NODES, @identity)
         pipeline.call(
           "HSET",
-          @identity,
+          node_key,
           "info", JSON.generate(info),
           "beat", now,
           "busy", busy,
           "quiet", quiet ? "true" : "false",
           "concurrency", @concurrency,
         )
-        pipeline.call("EXPIRE", @identity, TTL)
-        pipeline.call("DEL", "#{@identity}:work")
-        pipeline.call("HSET", "#{@identity}:work", *work.flatten(1)) unless work.empty?
-        pipeline.call("EXPIRE", "#{@identity}:work", TTL)
+        pipeline.call("EXPIRE", node_key, TTL)
+        pipeline.call("DEL", work_key)
+        pipeline.call("HSET", work_key, *work.flatten(1)) unless work.empty?
+        pipeline.call("EXPIRE", work_key, TTL)
       end
       now
     end
 
     def cleanup
       @config.redis_pool.pipelined do |pipeline|
-        pipeline.call("SREM", "processes", @identity)
-        pipeline.call("DEL", @identity)
-        pipeline.call("DEL", "#{@identity}:work")
+        pipeline.call("SREM", Keyspace::NODES, @identity)
+        pipeline.call("DEL", Keyspace.node(@identity))
+        pipeline.call("DEL", Keyspace.node_work(@identity))
       end
     ensure
       @config.close

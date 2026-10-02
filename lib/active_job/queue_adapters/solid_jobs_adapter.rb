@@ -27,16 +27,15 @@ module ActiveJob
       private
 
       def push(job, at: nil)
-        payload = {
-          "class" => SolidJobs::ActiveJob::Wrapper,
+        envelope = {
+          "task" => SolidJobs::ActiveJob::Wrapper,
           "wrapped" => job.class.name,
-          "queue" => job.queue_name,
-          "args" => [job.serialize],
+          "channel" => job.queue_name,
+          "arguments" => [job.serialize],
         }
-        payload["at"] = at if at
-        SolidJobs::Client.push(payload)
+        envelope["run_at"] = at if at
+        SolidJobs::Publisher.publish(envelope)
       end
     end
   end
 end
-

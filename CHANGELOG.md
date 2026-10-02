@@ -2,6 +2,34 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.0] - 2026-10-03
+
+### Breaking
+
+- Replace the previous job API with the independent `SolidJobs::Task` API:
+  `enqueue`, `enqueue_after`, `enqueue_at`, `enqueue_many`, `execute`, and
+  `with_options`.
+- Replace the previous payload with a SolidJobs envelope using `id`, `task`,
+  `arguments`, `channel`, `run_at`, `created_ms`, and `queued_ms`.
+- Move all Redis data into the `solid_jobs:` keyspace. Existing queued data is
+  not read or migrated automatically.
+- Replace middleware chains with `publish_interceptors` and
+  `execute_interceptors`, whose interceptors implement `around(context)`.
+- Replace the administrative API with `Metrics`, `Channel`, `StoredTask`,
+  `PlannedTasks`, `RetryingTasks`, `DiscardedTasks`, `Node`, `Nodes`,
+  `Execution`, and `Claims`.
+- Replace queue configuration with channels and the `:weighted`, `:priority`,
+  and `:shuffle` ordering modes.
+- Remove all Sidekiq compatibility aliases and wire-format compatibility.
+
+### Changed
+
+- Claims use UUID task IDs and claim tokens, with generation-fenced completion
+  and requeue operations.
+- Failure handling uses `max_failures`, `retry_within`, `retry_delay`, and
+  `after_final_failure`.
+- Testing modes are now `:capture` and `:execute`.
+
 ## [0.1.3] - 2026-10-01
 
 ### Changed
@@ -61,6 +89,7 @@ All notable changes to this project will be documented in this file.
 - Reliable-hot-path and CPU-scaling profilers plus the independent Sidekiq
   comparison benchmark.
 
+[0.2.0]: https://github.com/nicolasva/solid-jobs/compare/v0.1.3...v0.2.0
 [0.1.3]: https://github.com/nicolasva/solid-jobs/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/nicolasva/solid-jobs/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/nicolasva/solid-jobs/compare/v0.1.0...v0.1.1

@@ -1,9 +1,11 @@
 # frozen_string_literal: true
 
+require "securerandom"
+
 module SolidJobs
   module Testing
-    MODES = %i[disable fake inline].freeze
-    STORAGE_KEY = :solid_jobs_testing_jobs
+    MODES = %i[disable capture execute].freeze
+    STORAGE_KEY = :solid_jobs_testing_captured
     MODE_KEY = :solid_jobs_testing_mode
 
     module_function
@@ -29,14 +31,14 @@ module SolidJobs
       end
     end
 
-    def fake!
-      testing!(:fake) { yield } if block_given?
-      testing!(:fake) unless block_given?
+    def capture!
+      testing!(:capture) { yield } if block_given?
+      testing!(:capture) unless block_given?
     end
 
-    def inline!
-      testing!(:inline) { yield } if block_given?
-      testing!(:inline) unless block_given?
+    def execute!
+      testing!(:execute) { yield } if block_given?
+      testing!(:execute) unless block_given?
     end
 
     def disable!
@@ -44,22 +46,20 @@ module SolidJobs
       testing!(:disable) unless block_given?
     end
 
-    def jobs_for(job_class)
-      storage[job_class.name] ||= []
+    def captured_for(task)
+      storage[task.name] ||= []
     end
 
     def clear_all
       storage.clear
     end
 
-    def execute_inline(payload)
-      job_class = payload["class"]
-      job_class = Utilities.constantize(job_class) if job_class.is_a?(String)
-      instance = job_class.new
-      instance.jid = payload["jid"] if instance.respond_to?(:jid=)
-      SolidJobs.config.server_middleware.invoke(instance, payload, payload.fetch("queue", "default")) do
-        instance.perform(*payload.fetch("args"))
-      end
+    def execute(envelope)
+      normalized = Utilities.stringify_hash_keys(envelope)
+      normalized["task"] = normalized.fetch("task").name if normalized["task"].is_a?(Class)
+      normalized["channel"] ||= "default"
+      normalized["id"] ||= SecureRandom.uuid
+      Executor.new(redis_config: SolidJobs.config.redis_config).execute(normalized)
     end
 
     def storage

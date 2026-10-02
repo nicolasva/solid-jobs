@@ -8,7 +8,7 @@ module SolidJobs
     SIGNALS = %w[INT TERM TSTP TTIN INFO].freeze
 
     def initialize
-      @options = {queues: []}
+      @options = {channels: []}
     end
 
     def run(arguments = ARGV)
@@ -39,7 +39,9 @@ module SolidJobs
         options.on("-r", "--require PATH", "Require an application file") { |value| @options[:require] = value }
         options.on("-C", "--config PATH", "Load YAML configuration") { |value| @options[:config] = value }
         options.on("-c", "--concurrency N", Integer, "Processor Ractor count") { |value| @options[:concurrency] = value }
-        options.on("-q", "--queue QUEUE", "Queue name or name,weight") { |value| @options[:queues] << queue(value) }
+        options.on("--channel CHANNEL", "Channel name or name,weight") do |value|
+          @options[:channels] << channel(value)
+        end
         options.on("-e", "--environment NAME", "Application environment") { |value| @options[:environment] = value }
         options.on("-t", "--timeout SECONDS", Float, "Graceful shutdown timeout") { |value| @options[:timeout] = value }
         options.on("-v", "--version", "Print version") do
@@ -62,7 +64,9 @@ module SolidJobs
       values = values.fetch(@options[:environment], values) if @options[:environment]
       @options[:concurrency] ||= values["concurrency"]
       @options[:timeout] ||= values["timeout"]
-      @options[:queues] = Array(values["queues"]).map { |value| queue(value) } if @options[:queues].empty?
+      if @options[:channels].empty?
+        @options[:channels] = Array(values["channels"]).map { |value| channel(value) }
+      end
       if (url = values.dig("redis", "url") || values["redis_url"])
         SolidJobs.config.redis = SolidRedis::Config.new(url: url)
       end
@@ -77,7 +81,7 @@ module SolidJobs
     def apply_options
       ENV["RAILS_ENV"] = ENV["RACK_ENV"] = @options[:environment] if @options[:environment]
       SolidJobs.config.concurrency = @options[:concurrency] if @options[:concurrency]
-      SolidJobs.config.queues = @options[:queues] unless @options[:queues].empty?
+      SolidJobs.config.channels = @options[:channels] unless @options[:channels].empty?
       SolidJobs.config.shutdown_timeout = @options[:timeout] if @options[:timeout]
     end
 
@@ -126,10 +130,9 @@ module SolidJobs
       end
     end
 
-    def queue(value)
+    def channel(value)
       name, weight = value.to_s.split(",", 2)
       weight ? [name, Integer(weight)] : name
     end
   end
 end
-

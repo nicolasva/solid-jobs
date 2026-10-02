@@ -4,8 +4,8 @@ require_relative "stress_test_helper"
 require_relative "../support/redis_test_server"
 
 class ConcurrentStressJob
-  include SolidJobs::Job
-  solid_jobs_options retry: false
+  include SolidJobs::Task
+  task_options retry: false
 
   def perform(identifier)
     SolidJobs.redis do |redis|
@@ -91,9 +91,9 @@ class ConcurrentProcessingTest < Minitest::Test
   end
 
   def assert_accounted(enqueued)
-    queued = SolidJobs::Queue.all(config: @config).sum(&:size)
+    queued = SolidJobs::Channel.catalog(config: @config).sum(&:size)
     reserved = scan_reserved.sum { |key| @config.redis_pool.call("LLEN", key) }
-    dead = SolidJobs::DeadSet.new(config: @config).size
+    dead = SolidJobs::DiscardedTasks.new(config: @config).size
     unique = completed_job_ids.uniq.size
 
     assert_equal 0, enqueued - unique - queued - reserved - dead, "LOST must equal zero"
@@ -103,7 +103,7 @@ class ConcurrentProcessingTest < Minitest::Test
     cursor = "0"
     keys = []
     loop do
-      cursor, found = @config.redis_pool.call("SCAN", cursor, "MATCH", "*:reserved:*")
+      cursor, found = @config.redis_pool.call("SCAN", cursor, "MATCH", "solid_jobs:node:*:claimed:*")
       keys.concat(found)
       break if cursor == "0"
     end

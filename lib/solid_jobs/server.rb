@@ -163,7 +163,7 @@ module SolidJobs
           started = SolidJobs::StartupBarrier.boot(ready) do
             local_config = SolidJobs::Config.from_ractor_snapshot(settings)
             SolidJobs.use_config(local_config)
-            scheduler = SolidJobs::Scheduler.new(local_config)
+            scheduler = SolidJobs::Timer.new(local_config)
             local_config.redis_pool.call("PING")
           end
           next :aborted unless started
@@ -265,7 +265,7 @@ module SolidJobs
     end
 
     def remote_signal
-      config.redis_pool.call("RPOP", "#{identity}-signals")
+      config.redis_pool.call("RPOP", Keyspace.node_signals(identity))
     end
 
   end

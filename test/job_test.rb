@@ -3,8 +3,8 @@
 require_relative "test_helper"
 
 class HardJob
-  include SolidJobs::Job
-  solid_jobs_options queue: "critical", retry: 5
+  include SolidJobs::Task
+  task_options channel: "critical", max_failures: 5
 
   attr_reader :performed
 
@@ -20,41 +20,40 @@ end
 class JobTest < Minitest::Test
   def setup
     super
-    HardJob.clear
+    HardJob.clear_captured
     HardJob.performed.clear
   end
 
-  def test_perform_async_stores_compatible_payload
-    jid = HardJob.perform_async(1, "two")
-    payload = HardJob.jobs.fetch(0)
+  def test_enqueue_stores_solid_jobs_envelope
+    task_id = HardJob.enqueue(1, "two")
+    payload = HardJob.captured.fetch(0)
 
-    assert_match(/\A[0-9a-f]{24}\z/, jid)
-    assert_equal jid, payload["jid"]
-    assert_equal "HardJob", payload["class"]
-    assert_equal "critical", payload["queue"]
-    assert_equal [1, "two"], payload["args"]
-    assert_kind_of Integer, payload["created_at"]
+    assert_match(/\A[0-9a-f]{8}-[0-9a-f-]{27}\z/, task_id)
+    assert_equal task_id, payload["id"]
+    assert_equal "HardJob", payload["task"]
+    assert_equal "critical", payload["channel"]
+    assert_equal [1, "two"], payload["arguments"]
+    assert_kind_of Integer, payload["created_ms"]
   end
 
-  def test_perform_in_schedules_job
+  def test_enqueue_after_schedules_job
     before = Time.now.to_f
-    HardJob.perform_in(60, 1)
+    HardJob.enqueue_after(60, 1)
 
-    assert_operator HardJob.jobs.fetch(0)["at"], :>=, before + 59
+    assert_operator HardJob.captured.fetch(0)["run_at"], :>=, before + 59
   end
 
-  def test_inline_executes_job
-    SolidJobs.testing!(:inline) { HardJob.perform_async("inline") }
+  def test_execute_executes_job
+    SolidJobs.testing!(:execute) { HardJob.enqueue("execute") }
 
-    assert_equal [["inline"]], HardJob.performed
+    assert_equal [["execute"]], HardJob.performed
   end
 
   def test_rejects_non_json_arguments
     error = assert_raises(SolidJobs::InvalidArgumentError) do
-      HardJob.perform_async(Time.now)
+      HardJob.enqueue(Time.now)
     end
 
     assert_match(/JSON-native/, error.message)
   end
 end
-

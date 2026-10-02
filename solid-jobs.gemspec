@@ -8,7 +8,7 @@ Gem::Specification.new do |spec|
   spec.authors = ["Nicolas Vandenbogaerde"]
 
   spec.summary = "A Ractor-oriented Redis background job system"
-  spec.description = "Ractor-local job clients and workers with Sidekiq-compatible Redis payloads, queues, scheduling, and retries."
+  spec.description = "A Ractor-local Redis task runtime with its own envelope, channels, claims, interceptors, scheduling, and failure handling."
   spec.homepage = "https://github.com/nicolasva/solid-jobs"
   spec.license = "MIT"
   spec.required_ruby_version = ">= 3.2"

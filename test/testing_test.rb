@@ -4,26 +4,26 @@ require_relative "test_helper"
 
 class TestingTest < Minitest::Test
   def test_block_mode_is_restored
-    SolidJobs.testing!(:fake)
+    SolidJobs.testing!(:capture)
 
-    SolidJobs.testing!(:inline) do
-      assert_equal :inline, SolidJobs::Testing.mode
+    SolidJobs.testing!(:execute) do
+      assert_equal :execute, SolidJobs::Testing.mode
     end
 
-    assert_equal :fake, SolidJobs::Testing.mode
+    assert_equal :capture, SolidJobs::Testing.mode
   end
 
   def test_storage_is_ractor_local
-    HardJob.perform_async("main")
+    HardJob.enqueue("main")
 
     count = Ractor.new do
-      SolidJobs.testing!(:fake)
-      HardJob.perform_async("ractor")
-      HardJob.jobs.length
+      SolidJobs.testing!(:capture)
+      HardJob.enqueue("ractor")
+      HardJob.captured.length
     end.then { |ractor| SolidJobs::RactorSupport.value(ractor) }
 
     assert_equal 1, count
-    assert_equal [["main"]], HardJob.jobs.map { |job| job["args"] }
+    assert_equal [["main"]], HardJob.captured.map { |job| job["arguments"] }
   end
 
   # Regression: config and testing mode were thread-local, so jobs enqueued
@@ -34,12 +34,12 @@ class TestingTest < Minitest::Test
     seen = Thread.new { [SolidJobs.config, SolidJobs::Testing.mode] }.value
 
     assert_same main_config, seen[0]
-    assert_equal :fake, seen[1]
+    assert_equal :capture, seen[1]
   end
 
-  def test_jobs_enqueued_from_threads_land_in_the_shared_fake_storage
-    Array.new(4) { |index| Thread.new { HardJob.perform_async(index) } }.each(&:join)
+  def test_jobs_enqueued_from_threads_land_in_the_shared_capture_storage
+    Array.new(4) { |index| Thread.new { HardJob.enqueue(index) } }.each(&:join)
 
-    assert_equal [0, 1, 2, 3], HardJob.jobs.map { |job| job["args"].first }.sort
+    assert_equal [0, 1, 2, 3], HardJob.captured.map { |job| job["arguments"].first }.sort
   end
 end

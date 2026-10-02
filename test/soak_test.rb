@@ -5,7 +5,7 @@ require_relative "support/redis_test_server"
 require_relative "stress/stress_test_helper"
 
 class SoakJob
-  include SolidJobs::Job
+  include SolidJobs::Task
 
   def perform(index)
     SolidJobs.config.redis_pool.call("SET", "solid-jobs:soak:last", index)
@@ -31,12 +31,12 @@ class SoakTest < Minitest::Test
 
     while Process.clock_gettime(Process::CLOCK_MONOTONIC) < deadline
       arguments = Array.new(batch_size) { |offset| [submitted + offset] }
-      SoakJob.perform_bulk(arguments)
+      SoakJob.enqueue_many(arguments)
       submitted += batch_size
-      sleep 0.01 while Integer(config.redis_pool.call("LLEN", "queue:default")) > batch_size * 10
+      sleep 0.01 while Integer(config.redis_pool.call("LLEN", "solid_jobs:channel:default")) > batch_size * 10
     end
 
-    sleep 0.01 until Integer(config.redis_pool.call("GET", "stat:processed") || 0) >= submitted
+    sleep 0.01 until Integer(config.redis_pool.call("GET", "solid_jobs:metrics:processed") || 0) >= submitted
     server.stop
     GC.start
     growth = GC.stat(:heap_live_slots) - baseline_slots

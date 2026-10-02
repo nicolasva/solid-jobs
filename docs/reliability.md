@@ -1,63 +1,61 @@
 # Reliability model
 
-SolidJobs uses a Redis-backed at-least-once state machine:
+SolidJobs uses a namespaced Redis-backed at-least-once state machine:
 
 ```text
 READY
   |
-  | BLMOVE reservation
+  | atomic claim
   v
-IN_PROGRESS ---- ACK/LREM ----> removed
+CLAIMED ---- fenced completion ----> removed
   |
-  +---- application error ----> RETRY or DEAD, then ACK
+  +---- application error ----> RETRYING or DISCARDED, then completion
   +---- graceful timeout -----> READY
-  +---- process crash --------> reservation retained
+  +---- node crash -----------> claim retained
                                   |
                                   +---- recovery ----> READY
 ```
 
-The reservation list is named `<process-identity>:reserved:<processor-id>`.
-Each execution receives a distinct reservation journal entry:
+Ready tasks live in `solid_jobs:channel:<name>`. Each executor owns at most one
+claimed-task list and one claim journal entry:
 
 ```text
-job_id          stable across replay
-reservation_id  unique per execution attempt
-process_id      owning process identity
-worker_id       owning Processor Ractor
-attempt         monotonically increasing execution count
-reserved_at     wall-clock reservation time
+task_id      stable across replay
+claim_token  unique per execution attempt
+node_id      owning server identity
+executor_id  owning Executor Ractor
+channel      destination used by recovery
+attempt      monotonically increasing execution count
+claimed_at   wall-clock claim time
 ```
 
-ACK and requeue are fenced by `reservation_id`. Their Lua scripts first
-verify that the worker still owns the current journal generation. A delayed
-or revived worker cannot remove or requeue a newer reservation, even when a
-supervisor reuses the same processor slot.
+Completion and requeue are fenced by `claim_token`. Their Lua scripts verify
+that the executor still owns the current journal generation before changing
+state. A delayed or revived executor cannot complete or requeue a newer claim.
 
-The payload retains its canonical `queue` field, allowing another process to
-restore it after the owner is no longer alive. Recovery uses process liveness
-and heartbeat, never reservation age alone, so a legitimate long-running job
-is not stolen while its owner remains alive.
+The envelope retains its canonical `channel`, allowing another node to restore
+it after its owner dies. Recovery uses node liveness and heartbeat, never claim
+age alone, so a legitimate long-running task is not stolen.
 
 ## Failure boundaries
 
-- Before reservation: the job remains in `queue:<name>`.
-- After reservation or during `perform`: the job remains reserved.
-- After the application effect but before ACK: recovery replays the job.
-- Redis unavailable during ACK: the job remains reserved and is replayed.
-- Graceful shutdown: the active job may finish within the configured timeout;
+- Before claim: the task remains in `solid_jobs:channel:<name>`.
+- After claim or during `perform`: the task remains claimed.
+- After the application effect but before completion: recovery replays it.
+- Redis unavailable during completion: the task remains claimed and is replayed.
+- Graceful shutdown: the active task may finish within the configured timeout;
   otherwise it is interrupted and requeued.
-- `SIGKILL`: no handler runs; recovery relies exclusively on Redis state.
+- `SIGKILL`: recovery relies exclusively on Redis state.
 
-This design intentionally favors no job loss over duplicate suppression.
-Exactly-once side effects require application-level idempotency.
+This design favors no task loss over duplicate suppression. Exactly-once side
+effects require application-level idempotency.
 
 ## Startup isolation
 
-The server does not reserve work while components are booting. Heartbeat,
-Processor, and Scheduler Ractors initialize their local configuration and
-Redis pool, report `READY` exactly once, and wait behind
-`SolidJobs::StartupBarrier`. Processing starts only after every component is
-ready:
+The server does not claim work while components are booting. Heartbeat,
+Processor, and Timer Ractors initialize their local configuration and Redis
+pool, report `READY` exactly once, and wait behind
+`SolidJobs::StartupBarrier`:
 
 ```text
 BOOTING -> ALL_READY -> RUNNING
@@ -65,85 +63,69 @@ BOOTING -> ALL_READY -> RUNNING
 ```
 
 Boot failure is terminal. Already-ready components receive `:abort`, close
-their local resources, and never enter their fetch loops. Cleanup is
-idempotent. Component startup is serialized, avoiding concurrent TCP/RESP
-initialization paths known to crash Ruby 3.4 (reproduced on 3.4.4 macOS arm64
-and 3.4.11 Linux x86_64; `rake startup_torture` is the reproducer); normal
-processing remains parallel after `RUNNING`.
+their local resources, and never enter their claim loops. Cleanup is
+idempotent.
 
-### Ruby 3.4 Ractor caveat
+## Ruby 3.4 Ractor caveat
 
-Ruby 3.4's Ractor scheduler can deadlock the whole VM (main thread included)
-when a GC-triggered `rb_ractor_sched_barrier_start` runs while several
-Ractors exchange `move: true` messages: every thread parks in
-`ractor_sched_barrier_join_wait_locked` and the barrier never completes.
-`test/support/ractor_barrier_repro.rb` reproduces it **without SolidJobs or
-Redis** (one receiver, four senders, 24k moved messages per iteration):
-Ruby 3.4.4 freezes within the first iterations, Ruby 4.0.1 completes 30/30.
-Inside SolidJobs the same traffic pattern is the Processor → Heartbeat
-`:work`/`:done`/`:stats` channel, so any multi-Processor server on Ruby 3.4
-is exposed; once frozen, neither `Timeout` nor process exit
-(`rb_ractor_terminate_all`) can recover.
+Ruby 3.4's Ractor scheduler can deadlock the VM when a GC-triggered scheduler
+barrier runs while several Ractors exchange moved messages.
+`test/support/ractor_barrier_repro.rb` reproduces this without SolidJobs or
+Redis. Ruby 4.0.1 completes the equivalent reproducer.
 
-Recommendation: **run multi-Ractor SolidJobs servers on Ruby ≥ 4.0**. On
-Ruby 3.4 use the client/API side freely, and prefer one process per
-Processor (`concurrency: 1`) for the server. Server-based stress tests are
-skipped on Ruby < 4 for this reason, and `Server#start` logs a warning when
-it detects `concurrency > 1` on Ruby < 4.
+Run multi-Ractor SolidJobs servers on Ruby >= 4.0. On Ruby 3.4, prefer one
+process per Processor (`concurrency: 1`). Server stress tests are skipped on
+Ruby versions affected by this runtime issue, and `Server#start` warns when it
+detects a multi-Ractor configuration there.
 
-### Bounded shutdown
+## Bounded shutdown
 
 `Server#stop` never waits forever for a component. Each Ractor gets
-`shutdown_timeout + Server::STOP_GRACE` to return after `:stop`; the signal
-is re-sent up to `STOP_RESENDS` times, then the component is abandoned with
-an error log so the process can proceed with shutdown.
+`shutdown_timeout + Server::STOP_GRACE` to return after `:stop`; the signal is
+re-sent up to `STOP_RESENDS` times before the component is abandoned with an
+error log.
 
 ## Configuration scope
 
 `SolidJobs.config` and the testing mode are Ractor-local, not thread-local.
-Every thread and fiber inside a Ractor (for example Puma workers or Rails
-request threads) shares the configuration set on that Ractor, while each
-Ractor keeps its own isolated configuration.
+Every thread and fiber inside a Ractor shares its configuration, while each
+Ractor owns isolated mutable state and Redis connections.
 
 ## Integrity auditing
 
-Fault and chaos tests can reconcile a known set of job IDs against every
-Redis-backed state:
+Fault tests can reconcile known task IDs against every Redis-backed state:
 
 ```ruby
 report = SolidJobs::IntegrityCheck.call(
-  expected_job_ids: submitted_job_ids,
+  expected_job_ids: submitted_task_ids,
   acked_key: "test:completed",
 )
 
 raise report.inspect unless report.ok?
 ```
 
-The report separates lost jobs, unexpected/orphaned jobs, inconsistent
-reservation journals, dangling attempt indexes, duplicate active states, and
-malformed payloads. ACK removes the completed job's attempt index atomically;
-requeue retains it so a recovered reservation increments the same attempt
-sequence.
+The report separates lost tasks, unexpected tasks, inconsistent claim
+journals, dangling attempt indexes, duplicate active states, and malformed
+envelopes. Completion removes the task's attempt index atomically; requeue
+retains it so recovery increments the same attempt sequence.
 
-## Backpressure and queues
+## Backpressure and channels
 
-Each Processor owns at most one reservation and reserves only immediately
-before execution. A process with concurrency `N` therefore holds at most `N`
-active reservations, regardless of Redis queue depth.
+Each Processor owns at most one claim and claims only immediately before
+execution. A node with concurrency `N` therefore holds at most `N` active
+claims, regardless of channel depth.
 
-Queue mode defaults to `:weighted`:
+Channel order defaults to `:weighted`:
 
-- `:weighted` uses bounded weighted round-robin and does not starve configured
-  queues;
-- `:strict` always checks queues in declaration order and may intentionally
-  starve lower-priority queues while a higher-priority queue remains busy;
-- `:random` samples the configured weighted queue list on each reservation.
+- `:weighted` uses bounded weighted round-robin;
+- `:priority` checks channels in declaration order;
+- `:shuffle` samples the configured weighted channel list.
 
-Paused queues are excluded before reservation.
+Paused channels are excluded before claiming.
 
 ## Retry storms
 
-Retries use capped exponential backoff with equal jitter. For attempt `n`, the
-ceiling is `min(retry_base_delay * 2**n, retry_max_delay)` and the actual delay
+Retries use capped exponential backoff with equal jitter. For failure `n`, the
+ceiling is `min(retry_base_delay * 2**(n - 1), retry_max_delay)` and the delay
 is distributed between half and all of that ceiling. Defaults are 15 seconds
-and one hour. This spreads recovery traffic after a shared external outage.
+and one hour.

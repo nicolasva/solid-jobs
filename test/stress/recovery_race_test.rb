@@ -6,7 +6,7 @@ require_relative "../support/redis_test_server"
 class RecoveryRaceTest < Minitest::Test
   include SolidJobsStressHelpers
 
-  RESERVATIONS = Integer(ENV.fetch("STRESS_RECOVERY_JOBS", "1000"))
+  CLAIMS = Integer(ENV.fetch("STRESS_RECOVERY_JOBS", "1000"))
   RECOVERERS = Integer(ENV.fetch("STRESS_RECOVERERS", "4"))
 
   def setup
@@ -20,18 +20,18 @@ class RecoveryRaceTest < Minitest::Test
     @config.close
   end
 
-  def test_concurrent_process_recovery_claims_each_reservation_once
-    payloads = Array.new(RESERVATIONS) do |index|
+  def test_concurrent_node_recovery_restores_each_claim_once
+    envelopes = Array.new(CLAIMS) do |index|
       JSON.generate(
-        "class" => "ConcurrentStressJob",
-        "args" => [index],
-        "queue" => "default",
-        "jid" => "recovery-#{index}",
+        "task" => "ConcurrentStressJob",
+        "arguments" => [index],
+        "channel" => "default",
+        "id" => "recovery-#{index}",
       )
     end
-    payloads.each_slice(100).with_index do |slice, processor|
-      key = "#{Socket.gethostname}:999999:dead:reserved:#{processor}"
-      @config.redis_pool.call("LPUSH", key, *slice)
+    identity = "#{Socket.gethostname}:999999:dead"
+    envelopes.each_slice(100).with_index do |slice, executor|
+      @config.redis_pool.call("LPUSH", SolidJobs::Keyspace.claimed(identity, executor), *slice)
     end
 
     processes = Array.new(RECOVERERS) do
@@ -48,20 +48,22 @@ class RecoveryRaceTest < Minitest::Test
       assert_predicate $?, :success?
     end
 
-    recovered = @config.redis_pool.call("LRANGE", "queue:default", 0, -1)
-      .map { |raw| JSON.parse(raw).fetch("jid") }
-    assert_equal RESERVATIONS, recovered.uniq.size
+    recovered = @config.redis_pool.call("LRANGE", SolidJobs::Keyspace.channel("default"), 0, -1)
+      .map { |raw| JSON.parse(raw).fetch("id") }
+    assert_equal CLAIMS, recovered.uniq.size
     assert_equal recovered.uniq.size, recovered.size
-    assert_empty reserved_keys
+    assert_empty claimed_keys
   end
 
   private
 
-  def reserved_keys
+  def claimed_keys
     cursor = "0"
     keys = []
     loop do
-      cursor, found = @config.redis_pool.call("SCAN", cursor, "MATCH", "*:reserved:*")
+      cursor, found = @config.redis_pool.call(
+        "SCAN", cursor, "MATCH", "#{SolidJobs::Keyspace::PREFIX}:node:*:claimed:*",
+      )
       keys.concat(found)
       break if cursor == "0"
     end

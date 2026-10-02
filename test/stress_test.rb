@@ -4,7 +4,7 @@ require_relative "test_helper"
 require_relative "stress/stress_test_helper"
 
 class StressJob
-  include SolidJobs::Job
+  include SolidJobs::Task
 
   def perform(*)
   end
@@ -16,18 +16,18 @@ class StressTest < Minitest::Test
   RACTORS = Integer(ENV.fetch("SOLID_JOBS_STRESS_RACTORS", "4"))
   JOBS_PER_RACTOR = Integer(ENV.fetch("SOLID_JOBS_STRESS_JOBS", "500"))
 
-  def test_parallel_ractors_keep_fake_queues_isolated
+  def test_parallel_ractors_keep_capture_queues_isolated
     counts = Array.new(RACTORS) do |ractor_index|
       Ractor.new(ractor_index) do |index|
-        SolidJobs.testing!(:fake)
+        SolidJobs.testing!(:capture)
         SolidJobs::Testing.clear_all
         StressTest::JOBS_PER_RACTOR.times do |job_index|
-          StressJob.perform_async(index, job_index, {"value" => job_index})
+          StressJob.enqueue(index, job_index, {"value" => job_index})
         end
         [
-          StressJob.jobs.length,
-          StressJob.jobs.first["args"],
-          StressJob.jobs.last["args"],
+          StressJob.captured.length,
+          StressJob.captured.first["arguments"],
+          StressJob.captured.last["arguments"],
         ]
       end
     end.map { |ractor| SolidJobs::RactorSupport.value(ractor) }
@@ -37,20 +37,20 @@ class StressTest < Minitest::Test
       assert_equal [index, 0, {"value" => 0}], first
       assert_equal [index, JOBS_PER_RACTOR - 1, {"value" => JOBS_PER_RACTOR - 1}], last
     end
-    assert_empty StressJob.jobs
+    assert_empty StressJob.captured
   end
 
   def test_repeated_payload_generation_has_bounded_live_heap_growth
     5.times do
       SolidJobs::Testing.clear_all
-      1_000.times { |index| StressJob.perform_async(index) }
+      1_000.times { |index| StressJob.enqueue(index) }
     end
     GC.start
     baseline = GC.stat(:heap_live_slots)
 
     20.times do
       SolidJobs::Testing.clear_all
-      1_000.times { |index| StressJob.perform_async(index) }
+      1_000.times { |index| StressJob.enqueue(index) }
     end
     SolidJobs::Testing.clear_all
     GC.start

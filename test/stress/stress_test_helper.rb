@@ -6,7 +6,7 @@ require "timeout"
 require "solid_jobs"
 
 module SolidJobsStressHelpers
-  # Real-Redis stress tests must not inherit a `:fake` testing mode left in the
+  # Real-Redis stress tests must not inherit a `:capture` testing mode left in the
   # Ractor by unit tests loaded into the same process.
   def use_real_redis!(config)
     SolidJobs.testing!(:disable)

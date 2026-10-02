@@ -19,8 +19,8 @@ class IntegrityCheckTest < Minitest::Test
   def test_accounts_for_ready_scheduled_and_acknowledged_jobs
     ready = payload("ready")
     scheduled = payload("scheduled")
-    @config.redis_pool.call("LPUSH", "queue:default", JSON.generate(ready))
-    @config.redis_pool.call("ZADD", "schedule", Time.now.to_f + 60, JSON.generate(scheduled))
+    @config.redis_pool.call("LPUSH", "solid_jobs:channel:default", JSON.generate(ready))
+    @config.redis_pool.call("ZADD", SolidJobs::Keyspace::PLANNED, Time.now.to_f + 60, JSON.generate(scheduled))
     @config.redis_pool.call("SADD", "completed", "acked")
 
     report = SolidJobs::IntegrityCheck.call(
@@ -33,15 +33,15 @@ class IntegrityCheckTest < Minitest::Test
     assert_empty report.lost
     assert_empty report.duplicates
     assert_equal "READY", report.states.fetch("ready").first.fetch(:state)
-    assert_equal "SCHEDULED", report.states.fetch("scheduled").first.fetch(:state)
+    assert_equal "PLANNED", report.states.fetch("scheduled").first.fetch(:state)
     assert_equal "ACKED", report.states.fetch("acked").first.fetch(:state)
   end
 
   def test_reports_lost_orphaned_and_duplicate_jobs
     duplicate = JSON.generate(payload("duplicate"))
-    @config.redis_pool.call("LPUSH", "queue:default", duplicate)
-    @config.redis_pool.call("ZADD", "retry", Time.now.to_f, duplicate)
-    @config.redis_pool.call("LPUSH", "queue:default", JSON.generate(payload("unknown")))
+    @config.redis_pool.call("LPUSH", "solid_jobs:channel:default", duplicate)
+    @config.redis_pool.call("ZADD", SolidJobs::Keyspace::RETRIES, Time.now.to_f, duplicate)
+    @config.redis_pool.call("LPUSH", "solid_jobs:channel:default", JSON.generate(payload("unknown")))
 
     report = SolidJobs::IntegrityCheck.call(
       expected_job_ids: %w[missing duplicate],
@@ -54,26 +54,26 @@ class IntegrityCheckTest < Minitest::Test
     refute report.ok?
   end
 
-  def test_reports_invalid_reservations_and_dangling_attempt_indexes
+  def test_reports_invalid_claims_and_dangling_attempt_indexes
     identity = "host:123:identity"
-    reserved_key = "#{identity}:reserved:4"
+    claimed_key = SolidJobs::Keyspace.claimed(identity, 4)
     job = payload("reserved")
-    @config.redis_pool.call("LPUSH", reserved_key, JSON.generate(job))
+    @config.redis_pool.call("LPUSH", claimed_key, JSON.generate(job))
     @config.redis_pool.call(
       "HSET",
-      "#{identity}:reservations",
+      SolidJobs::Keyspace.claims(identity),
       "4",
       JSON.generate(
-        "job_id" => "wrong",
-        "process_id" => identity,
-        "worker_id" => "4",
-        "queue" => "default",
-        "reservation_id" => "reservation",
-        "reserved_at" => Time.now.to_f,
+        "task_id" => "wrong",
+        "node_id" => identity,
+        "executor_id" => "4",
+        "channel" => "default",
+        "claim_token" => "claim",
+        "claimed_at" => Time.now.to_f,
         "attempt" => 1,
       ),
     )
-    @config.redis_pool.call("HSET", "solid-jobs:attempts", "acked", 1)
+    @config.redis_pool.call("HSET", SolidJobs::Keyspace::ATTEMPTS, "acked", 1)
 
     report = SolidJobs::IntegrityCheck.call(
       expected_job_ids: %w[reserved acked],
@@ -89,59 +89,59 @@ class IntegrityCheckTest < Minitest::Test
     refute report.ok?
   end
 
-  def test_ack_atomically_removes_reservation_metadata_and_attempt_index
+  def test_completion_atomically_removes_claim_metadata_and_attempt_index
     raw = JSON.generate(payload("acknowledged"))
-    @config.redis_pool.call("LPUSH", "queue:default", raw)
-    fetch = SolidJobs::Fetch.new(
+    @config.redis_pool.call("LPUSH", "solid_jobs:channel:default", raw)
+    claims = SolidJobs::Claim.new(
       @config,
       identity: "host:123:identity",
       processor_id: 2,
     )
 
-    work = fetch.retrieve
+    claim = claims.next
 
     assert_equal "1", @config.redis_pool.call(
       "HGET",
-      "solid-jobs:attempts",
+      SolidJobs::Keyspace::ATTEMPTS,
       "acknowledged",
     )
-    assert work.acknowledge
-    assert_nil @config.redis_pool.call("HGET", "solid-jobs:attempts", "acknowledged")
+    assert claim.complete
+    assert_nil @config.redis_pool.call("HGET", SolidJobs::Keyspace::ATTEMPTS, "acknowledged")
     assert_equal 0, @config.redis_pool.call(
       "LLEN",
-      "host:123:identity:reserved:2",
+      SolidJobs::Keyspace.claimed("host:123:identity", 2),
     )
     assert_nil @config.redis_pool.call(
       "HGET",
-      "host:123:identity:reservations",
+      SolidJobs::Keyspace.claims("host:123:identity"),
       "2",
     )
   end
 
-  def test_stale_reservation_cannot_ack_or_requeue_newer_generation
+  def test_stale_claim_cannot_complete_or_requeue_newer_generation
     identity = "host:123:identity"
-    metadata_key = "#{identity}:reservations"
-    reserved_key = "#{identity}:reserved:2"
+    metadata_key = SolidJobs::Keyspace.claims(identity)
+    claimed_key = SolidJobs::Keyspace.claimed(identity, 2)
     raw = JSON.generate(payload("fenced"))
-    @config.redis_pool.call("LPUSH", "queue:default", raw)
-    work = SolidJobs::Fetch.new(
+    @config.redis_pool.call("LPUSH", "solid_jobs:channel:default", raw)
+    claim = SolidJobs::Claim.new(
       @config,
       identity: identity,
       processor_id: 2,
-    ).retrieve
+    ).next
     metadata = JSON.parse(@config.redis_pool.call("HGET", metadata_key, "2"))
-    metadata["reservation_id"] = "newer-generation"
+    metadata["claim_token"] = "newer-generation"
     @config.redis_pool.call("HSET", metadata_key, "2", JSON.generate(metadata))
 
-    refute work.acknowledge
-    refute work.requeue
-    assert_equal 1, @config.redis_pool.call("LLEN", reserved_key)
+    refute claim.complete
+    refute claim.requeue
+    assert_equal 1, @config.redis_pool.call("LLEN", claimed_key)
     assert_equal "newer-generation", JSON.parse(
       @config.redis_pool.call("HGET", metadata_key, "2"),
-    ).fetch("reservation_id")
+    ).fetch("claim_token")
     assert_equal "1", @config.redis_pool.call(
       "HGET",
-      "solid-jobs:attempts",
+      SolidJobs::Keyspace::ATTEMPTS,
       "fenced",
     )
   end
@@ -150,11 +150,11 @@ class IntegrityCheckTest < Minitest::Test
 
   def payload(job_id)
     {
-      "class" => "IntegrityJob",
-      "args" => [],
-      "queue" => "default",
-      "jid" => job_id,
-      "retry" => false,
+      "task" => "IntegrityJob",
+      "arguments" => [],
+      "channel" => "default",
+      "id" => job_id,
+      "max_failures" => 0,
     }
   end
 end

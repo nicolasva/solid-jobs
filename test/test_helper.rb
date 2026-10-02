@@ -7,7 +7,7 @@ class Minitest::Test
   def setup
     SolidJobs.reset!
     SolidJobs::Testing.clear_all
-    SolidJobs.testing!(:fake)
+    SolidJobs.testing!(:capture)
   end
 end
 

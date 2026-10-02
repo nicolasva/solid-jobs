@@ -26,8 +26,8 @@ module CpuScalingWork
   end
 end
 
-class SolidJobsCpuScalingJob
-  include SolidJobs::Job
+class SolidJobsCpuScalingTask
+  include SolidJobs::Task
 
   def perform(iterations, seed)
     CpuScalingWork.run(iterations, seed)
@@ -50,16 +50,16 @@ if %w[protocol direct].include?(MODE)
   (0...JOBS).each_slice(1_000) do |indices|
     payloads = indices.map do |index|
       JSON.generate(
-        "class" => "SolidJobsCpuScalingJob",
-        "args" => [ITERATIONS, index],
-        "queue" => "default",
-        "jid" => format("%024x", index),
-        "retry" => false,
-        "created_at" => now,
-        "enqueued_at" => now,
+        "task" => "SolidJobsCpuScalingTask",
+        "arguments" => [ITERATIONS, index],
+        "channel" => "default",
+        "id" => format("%024x", index),
+        "max_failures" => 0,
+        "created_ms" => now,
+        "queued_ms" => now,
       )
     end
-    seed_config.redis_pool.call("LPUSH", "queue:default", *payloads)
+    seed_config.redis_pool.call("LPUSH", "solid_jobs:channel:default", *payloads)
   end
   seed_config.redis_pool.call("CONFIG", "RESETSTAT")
 end
@@ -69,22 +69,22 @@ workers = CONCURRENCY.times.map do |worker_index|
   Ractor.new(MODE, jobs_per_ractor, worker_index, REDIS_URL) do |mode, count, index, redis_url|
     if mode == "dispatch"
       config = SolidJobs::Config.new(concurrency: 1)
-      worker = SolidJobs::Worker.new(redis_config: config.redis_config, config: config)
+      executor = SolidJobs::Executor.new(redis_config: config.redis_config, config: config)
       payload = {
-        "class" => "SolidJobsCpuScalingJob",
-        "args" => [ITERATIONS, index],
-        "queue" => "benchmark",
-        "jid" => format("%024x", index),
+        "task" => "SolidJobsCpuScalingTask",
+        "arguments" => [ITERATIONS, index],
+        "channel" => "benchmark",
+        "id" => format("%024x", index),
       }
     elsif mode == "direct" || mode == "protocol"
       redis = SolidRedis::Config.new(url: redis_url, timeout: 1)
       config = SolidJobs::Config.new(redis: redis, concurrency: 1)
-      fetch = SolidJobs::Fetch.new(
+      claims = SolidJobs::Claim.new(
         config,
         identity: "cpu-scaling:#{Process.pid}:#{index}",
         processor_id: index,
       )
-      worker = SolidJobs::Worker.new(redis_config: redis, config: config) if mode == "direct"
+      executor = SolidJobs::Executor.new(redis_config: redis, config: config) if mode == "direct"
       config.redis_pool.call("PING")
     end
     Ractor.receive
@@ -95,7 +95,7 @@ workers = CONCURRENCY.times.map do |worker_index|
       sample = (job_index % SAMPLE_EVERY).zero?
       if mode == "direct" || mode == "protocol"
         started = Process.clock_gettime(Process::CLOCK_MONOTONIC) if sample
-        unit = fetch.retrieve
+        claim = claims.next
         if sample
           reserve_latencies << (
             (Process.clock_gettime(Process::CLOCK_MONOTONIC) - started) * 1_000
@@ -104,7 +104,7 @@ workers = CONCURRENCY.times.map do |worker_index|
       end
       if mode == "dispatch"
         started = Process.clock_gettime(Process::CLOCK_MONOTONIC) if sample
-        worker.perform(payload)
+        executor.execute(payload)
         if sample
           execution_latencies << (
             (Process.clock_gettime(Process::CLOCK_MONOTONIC) - started) * 1_000
@@ -112,7 +112,7 @@ workers = CONCURRENCY.times.map do |worker_index|
         end
       elsif mode == "direct"
         started = Process.clock_gettime(Process::CLOCK_MONOTONIC) if sample
-        worker.perform(unit.job)
+        executor.execute(claim.envelope)
         if sample
           execution_latencies << (
             (Process.clock_gettime(Process::CLOCK_MONOTONIC) - started) * 1_000
@@ -127,9 +127,9 @@ workers = CONCURRENCY.times.map do |worker_index|
           )
         end
       end
-      if unit
+      if claim
         started = Process.clock_gettime(Process::CLOCK_MONOTONIC) if sample
-        raise "ACK fencing rejected current reservation" unless unit.acknowledge
+        raise "Completion fencing rejected current claim" unless claim.complete
         if sample
           ack_latencies << (
             (Process.clock_gettime(Process::CLOCK_MONOTONIC) - started) * 1_000

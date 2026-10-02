@@ -3,7 +3,7 @@
 require_relative "test_helper"
 
 class ProcessPayloadJob
-  include SolidJobs::Job
+  include SolidJobs::Task
 
   def perform(identifier)
     {
@@ -15,7 +15,7 @@ class ProcessPayloadJob
 end
 
 class FailingPayloadJob
-  include SolidJobs::Job
+  include SolidJobs::Task
 
   def perform
     raise "Application failure"
@@ -28,17 +28,17 @@ class WorkerTest < Minitest::Test
     @redis_config = SolidRedis::Config.new(url: "redis://127.0.0.1:6379/0")
     @payload = Ractor.make_shareable(
       {
-        "class" => "ProcessPayloadJob",
-        "args" => [42],
-        "queue" => "default",
-        "jid" => "0123456789abcdef01234567",
+        "task" => "ProcessPayloadJob",
+        "arguments" => [42],
+        "channel" => "default",
+        "id" => "0123456789abcdef01234567",
       },
     )
   end
 
   def test_worker_is_encapsulated_in_an_autonomous_ractor
     result = Ractor.new(@payload, @redis_config) do |payload, redis_config|
-      SolidJobs::Worker.new(redis_config: redis_config).perform(payload)
+      SolidJobs::Executor.new(redis_config: redis_config).execute(payload)
     rescue StandardError => error
       {status: "error", error: error.class.name}
     end.then { |ractor| SolidJobs::RactorSupport.value(ractor) }
@@ -50,26 +50,26 @@ class WorkerTest < Minitest::Test
 
   def test_shareable_copy_does_not_leak_mutable_payload_state
     mutable = {
-      "class" => "ProcessPayloadJob",
-      "args" => [100],
-      "queue" => "default",
+      "task" => "ProcessPayloadJob",
+      "arguments" => [100],
+      "channel" => "default",
     }
 
     copied = SolidJobs::Utilities.shareable_copy(mutable)
-    mutable["args"] << 200
+    mutable["arguments"] << 200
 
     assert Ractor.shareable?(copied)
-    assert_equal [100], copied["args"]
-    assert copied["args"].frozen?
+    assert_equal [100], copied["arguments"]
+    assert copied["arguments"].frozen?
   end
 
   def test_application_error_is_exposed_to_retry_layer
     payload = Ractor.make_shareable(
-      {"class" => "FailingPayloadJob", "args" => [], "queue" => "critical"},
+      {"task" => "FailingPayloadJob", "arguments" => [], "channel" => "critical"},
     )
 
     result = Ractor.new(payload, @redis_config) do |job, redis_config|
-      SolidJobs::Worker.new(redis_config: redis_config).perform(job)
+      SolidJobs::Executor.new(redis_config: redis_config).execute(job)
     rescue StandardError => error
       {status: "failed", exception: error.class.name, message: error.message}
     end.then { |ractor| SolidJobs::RactorSupport.value(ractor) }
@@ -80,25 +80,24 @@ class WorkerTest < Minitest::Test
   end
 
   def test_strict_payload_validation
-    client = SolidJobs::Client.new(configuration: @redis_config)
+    publisher = SolidJobs::Publisher.new(configuration: @redis_config)
 
-    assert_raises(ArgumentError) { client.push(nil) }
-    assert_raises(ArgumentError) { client.push("job_class" => "", "args" => []) }
-    assert_raises(ArgumentError) { client.push("job_class" => "ProcessPayloadJob") }
+    assert_raises(ArgumentError) { publisher.publish(nil) }
+    assert_raises(ArgumentError) { publisher.publish("task" => "", "arguments" => []) }
+    assert_raises(ArgumentError) { publisher.publish("task" => "ProcessPayloadJob") }
   end
 
-  def test_queue_routing_uses_canonical_payload
-    client = SolidJobs::Client.new(configuration: @redis_config)
-    jid = client.push(
-      "job_class" => "ProcessPayloadJob",
-      "args" => [42],
-      "queue" => "critical",
+  def test_channel_routing_uses_canonical_envelope
+    publisher = SolidJobs::Publisher.new(configuration: @redis_config)
+    task_id = publisher.publish(
+      "task" => "ProcessPayloadJob",
+      "arguments" => [42],
+      "channel" => "critical",
     )
-    payload = ProcessPayloadJob.jobs.last
+    payload = ProcessPayloadJob.captured.last
 
-    assert_equal jid, payload["jid"]
-    assert_equal "ProcessPayloadJob", payload["class"]
-    refute payload.key?("job_class")
-    assert_equal "critical", payload["queue"]
+    assert_equal task_id, payload["id"]
+    assert_equal "ProcessPayloadJob", payload["task"]
+    assert_equal "critical", payload["channel"]
   end
 end
