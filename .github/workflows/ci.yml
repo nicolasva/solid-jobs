@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        ruby: ["3.4", "4.0"]
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install redis-server
+        run: sudo apt-get update -q && sudo apt-get install -y -q redis-server
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: ${{ matrix.ruby }}
+          bundler-cache: true
+
+      - name: Unit and integration tests
+        run: bundle exec rake test
+
+      - name: Bounded stress tests
+        run: STRESS_JOBS=2000 bundle exec rake stress
+
+      - name: Build gem
+        run: bundle exec rake build
