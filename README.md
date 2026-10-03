@@ -193,3 +193,53 @@ absent:
 The Active Job adapter remains available as
 `ActiveJob::QueueAdapters::SolidJobsAdapter`, but it writes only SolidJobs
 envelopes and keys.
+
+## Performance: SolidJobs vs Sidekiq
+
+SolidJobs uses Ruby Ractors for parallel execution across real CPU cores, while
+Sidekiq uses threads within a single Ruby process subject to the Global VM
+Lock (GVL).
+
+The benchmark suite (`benchmark_sidekiq_solid-jobs`) measures throughput and
+resource usage under identical workloads against an isolated Redis server.
+
+### CPU Workload (`process-cpu`)
+
+Sidekiq remains capped by Ruby's GVL near 1 core (~100% CPU), whereas SolidJobs
+scales linearly across cores:
+
+| Concurrency | Sidekiq (jobs/s) | SolidJobs (jobs/s) | SolidJobs Scaling | Sidekiq CPU | SolidJobs CPU |
+|---:|---:|---:|---:|---:|---:|
+| 1 | 290 | 285 | 100.0% | 96.4% | 94.8% |
+| 2 | 299 | 559 | 98.2% | 100.1% | 189.4% |
+| 4 | 301 | 1,098 | 96.5% | 100.4% | 375.5% |
+| 8 | 302 | **2,141** | **94.0%** | 100.2% | **749.7%** |
+
+*At 8 concurrency, SolidJobs delivers **7.1× the throughput** of Sidekiq on pure CPU workloads.*
+
+### Mixed Workload (`process-mixed` — CPU + I/O)
+
+| Concurrency | Sidekiq (jobs/s) | SolidJobs (jobs/s) | SolidJobs Scaling |
+|---:|---:|---:|---:|
+| 1 | 183 | 194 | 100.0% |
+| 2 | 372 | 420 | 108.2% |
+| 4 | 555 | 778 | 100.2% |
+| 8 | 585 | **1,827** | **117.6%** |
+
+*At 8 concurrency, SolidJobs delivers **3.1× higher throughput** on mixed workloads.*
+
+### Client Enqueue Throughput
+
+| Concurrency | Sidekiq Enqueue (jobs/s) | SolidJobs Enqueue (jobs/s) | Sidekiq Bulk (jobs/s) | SolidJobs Bulk (jobs/s) |
+|---:|---:|---:|---:|---:|
+| 1 | 22,560 | 23,540 | 256,996 | 203,910 |
+| 2 | 24,747 | 41,416 | 292,047 | 358,227 |
+| 4 | 23,989 | 65,291 | 293,154 | 604,933 |
+| 8 | 24,092 | **88,865** | 291,347 | **824,067** |
+
+### Memory & Allocations
+
+- **Peak RSS:** Comparable memory footprint (~42–44 MiB for both at 8 concurrency).
+- **Allocations:** SolidJobs produces fewer object allocations per task (75 vs 108 allocations/job on CPU tasks, 47 vs 60 on individual enqueue), reducing GC pressure.
+
+*Environment: Ruby 4.0.1 (arm64-darwin25); Sidekiq 8.1.7; SolidJobs 0.4.0.*
