@@ -25,7 +25,7 @@ Gem::Specification.new do |spec|
   spec.add_dependency "base-service", "~> 0.1"
   spec.add_dependency "callback-collection", "~> 0.2"
   spec.add_dependency "logger", ">= 1.7"
-  spec.add_dependency "solid-redis", "~> 1.0", ">= 1.0.11"
+  spec.add_dependency "solid-redis", "~> 1.0", ">= 1.0.12"
 
   spec.add_development_dependency "minitest", ">= 5", "< 7"
   spec.add_development_dependency "rake", "~> 13.0"

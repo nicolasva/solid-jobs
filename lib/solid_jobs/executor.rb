@@ -18,17 +18,18 @@ module SolidJobs
 
       task_name = envelope["task"]
       raise InvalidJobError, "Task must be present" unless task_name.is_a?(String) && !task_name.empty?
-      raise InvalidJobError, "Task arguments must be an Array" unless envelope["arguments"].is_a?(Array)
+      arguments = envelope["arguments"]
+      raise InvalidJobError, "Task arguments must be an Array" unless arguments.is_a?(Array)
       unless envelope["channel"].is_a?(String) && !envelope["channel"].empty?
         raise InvalidJobError, "Task channel must be present"
       end
 
       task = Utilities.constantize(task_name).new
       task.task_id = envelope["id"] if task.respond_to?(:task_id=)
-      operation = -> { task.execute_task(*envelope.fetch("arguments")) }
-      return operation.call if config.execute_interceptors.empty?
+      interceptors = config.execute_interceptors
+      return task.execute_task(*arguments) if interceptors.empty?
 
-      config.execute_interceptors.call(Execution.new(task, envelope), &operation)
+      interceptors.call(Execution.new(task, envelope)) { task.execute_task(*arguments) }
     end
   end
 end

@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.4.1] - 2026-10-04
+
+### Changed
+
+- Reduce allocations in reliable claims and task dispatch.
+- Require SolidRedis 1.0.12 or newer.
+
 ## [0.4.0] - 2026-10-03
 
 ### Changed

@@ -137,10 +137,15 @@ module SolidJobs
       @channels = config.channel_entries.flat_map do |name, weight|
         Array.new(weight, Keyspace.channel(name))
       end.freeze
+      @channel_names = @channels.to_h do |key|
+        [key, key.delete_prefix("#{Keyspace::PREFIX}:channel:")]
+      end.freeze
+      @available_channels = @channels
       @claimed_key = Keyspace.claimed(identity, processor_id) if @reliable && identity
       @claims_key = Keyspace.claims(identity) if @claimed_key
       @identity = identity
       @processor_id = processor_id
+      @executor_field = processor_id.to_s
       @paused = []
       @paused_refresh_at = 0.0
       @channel_index = 0
@@ -156,9 +161,7 @@ module SolidJobs
       end
 
       refresh_paused
-      channels = @channels.reject do |key|
-        @paused.include?(key.delete_prefix("#{Keyspace::PREFIX}:channel:"))
-      end
+      channels = @available_channels
       return sleep(0.05) if channels.empty?
 
       if @claimed_key
@@ -190,7 +193,7 @@ module SolidJobs
         redis_pool: @redis_pool,
         claimed_key: @claimed_key,
         claims_key: @claims_key,
-        executor_field: @processor_id.to_s,
+        executor_field: @executor_field,
         claim_token: claim_token,
         attempt: attempt,
       )
@@ -209,7 +212,7 @@ module SolidJobs
             redis_pool: @redis_pool,
             claimed_key: @claimed_key,
             claims_key: @claims_key,
-            executor_field: @processor_id.to_s,
+            executor_field: @executor_field,
             claim_token: metadata.fetch("claim_token"),
             attempt: Integer(metadata.fetch("attempt")),
           )
@@ -221,7 +224,7 @@ module SolidJobs
     def register(envelope, channel)
       return [nil, nil] unless @claimed_key
 
-      claim_token = SecureRandom.uuid
+      claim_token = SecureRandom.hex(16)
       metadata = JSON.generate(
         "task_id" => envelope["id"],
         "claim_token" => claim_token,
@@ -272,11 +275,11 @@ module SolidJobs
         TIMEOUT,
         "BLMOVE", source, @claimed_key, "RIGHT", "LEFT", TIMEOUT,
       )
-      payload && record(payload, source.delete_prefix("#{Keyspace::PREFIX}:channel:"))
+      payload && record(payload, @channel_names.fetch(source))
     end
 
     def claim_now(source)
-      claim_token = SecureRandom.uuid
+      claim_token = SecureRandom.hex(16)
       claimed_at = Time.now.to_f
       result = begin
         @redis_pool.call(
@@ -298,7 +301,7 @@ module SolidJobs
       payload, attempt = result
       record(
         payload,
-        source.delete_prefix("#{Keyspace::PREFIX}:channel:"),
+        @channel_names.fetch(source),
         claim_token: claim_token,
         attempt: Integer(attempt),
       )
@@ -309,6 +312,11 @@ module SolidJobs
       return if now < @paused_refresh_at
 
       @paused = Array(@redis_pool.call("SMEMBERS", Keyspace::PAUSED_CHANNELS))
+      @available_channels = if @paused.empty?
+        @channels
+      else
+        @channels.reject { |key| @paused.include?(@channel_names.fetch(key)) }
+      end
       @paused_refresh_at = now + 5
     end
   end
