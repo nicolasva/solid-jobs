@@ -243,3 +243,16 @@ scales linearly across cores:
 - **Allocations:** SolidJobs produces fewer object allocations per task (75 vs 108 allocations/job on CPU tasks, 47 vs 60 on individual enqueue), reducing GC pressure.
 
 *Environment: Ruby 4.0.1 (arm64-darwin25); Sidekiq 8.1.7; SolidJobs 0.4.0.*
+
+## Monitoring with SolidTrace
+
+**SolidTrace** is a statistics and observability tool for SolidJobs. It shows
+real-time SolidJobs metrics while your application runs: jobs per second, CPU
+and memory usage per Ractor, queue depth, Redis latency, job flow, and recent
+job executions.
+
+![SolidTrace dashboard](docs/images/solid-trace.jpg)
+
+SolidTrace is a commercial product. If you would like to acquire it, please
+contact me at [nicolas.vandenbogaerde@gmail.com](mailto:nicolas.vandenbogaerde@gmail.com)
+or via GitHub ([@nicolasva](https://github.com/nicolasva)).
