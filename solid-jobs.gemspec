@@ -10,7 +10,7 @@ Gem::Specification.new do |spec|
   spec.summary = "A Ractor-oriented Redis background job system"
   spec.description = "A Ractor-local Redis task runtime with its own envelope, channels, claims, interceptors, scheduling, and failure handling."
   spec.homepage = "https://github.com/nicolasva/solid-jobs"
-  spec.license = "MIT"
+  spec.license = "LGPL-3.0-or-later"
   spec.required_ruby_version = ">= 3.2"
 
   spec.files = Dir["exe/*", "lib/**/*.rb", "docs/**/*.md", "README.md", "CHANGELOG.md", "LICENSE.txt"]
