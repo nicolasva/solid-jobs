@@ -2,6 +2,7 @@
 
 [![Build Status](https://github.com/nicolasva/solid-jobs/actions/workflows/ci.yml/badge.svg)](https://github.com/nicolasva/solid-jobs/actions/workflows/ci.yml)
 [![Gem Version](https://badge.fury.io/rb/solid-jobs.svg)](https://rubygems.org/gems/solid-jobs)
+[![Downloads](https://img.shields.io/gem/dt/solid-jobs?style=flat)](https://rubygems.org/gems/solid-jobs)
 
 SolidJobs is a Ractor-oriented Redis task runner for Ruby. It provides its own
 task API, Redis envelope, keyspace, interceptor model, failure policy, and
