@@ -28,26 +28,29 @@ module SolidJobs
       }
       node_key = Keyspace.node(@identity)
       work_key = Keyspace.node_work(@identity)
-      busy = @config.redis_pool.call("HLEN", work_key)
-      @config.redis_pool.pipelined do |pipeline|
-        pipeline.call("INCRBY", Keyspace::PROCESSED, processed) if processed.positive?
-        pipeline.call("INCRBY", Keyspace::FAILED, failed) if failed.positive?
-        pipeline.call("SADD", Keyspace::NODES, @identity)
-        pipeline.call(
-          "HSET",
-          node_key,
-          "info", JSON.generate(info),
-          "beat", now,
-          "busy", busy,
-          "quiet", quiet ? "true" : "false",
-          "concurrency", @concurrency,
-        )
-        pipeline.call("EXPIRE", node_key, TTL)
-        pipeline.call("DEL", work_key)
-        pipeline.call("HSET", work_key, *work.flatten(1)) unless work.empty?
-        pipeline.call("EXPIRE", work_key, TTL)
+      begin
+        busy = @config.redis_pool.call("HLEN", work_key)
+        @config.redis_pool.pipelined do |pipeline|
+          pipeline.call("INCRBY", Keyspace::PROCESSED, processed) if processed.positive?
+          pipeline.call("INCRBY", Keyspace::FAILED, failed) if failed.positive?
+          pipeline.call("SADD", Keyspace::NODES, @identity)
+          pipeline.call(
+            "HSET",
+            node_key,
+            "info", JSON.generate(info),
+            "beat", now,
+            "busy", busy,
+            "quiet", quiet ? "true" : "false",
+            "concurrency", @concurrency,
+          )
+          pipeline.call("EXPIRE", node_key, TTL)
+          pipeline.call("DEL", work_key)
+          pipeline.call("HSET", work_key, *work.flatten(1)) unless work.empty?
+          pipeline.call("EXPIRE", work_key, TTL)
+        end
+      ensure
+        observe(quiet: quiet, work: work, redis: redis, phase: phase, observed_at: now)
       end
-      observe(quiet: quiet, work: work, redis: redis, phase: phase, observed_at: now)
       now
     end
 

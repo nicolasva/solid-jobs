@@ -318,6 +318,42 @@ class InstrumentationTest < Minitest::Test
     assert recorder.events.all? { |name, _payload| name == "redis.observed" }
   end
 
+  def test_heartbeat_observes_process_and_workers_when_redis_write_fails
+    recorder = RecordingInstrumenter.new
+    redis_pool = Object.new
+    redis_pool.define_singleton_method(:call) do |*_arguments|
+      raise SolidRedis::ConnectionError, "offline"
+    end
+    config = Struct.new(:instrumenter, :logger, :redis_pool, :channels).new(
+      recorder,
+      Logger.new(StringIO.new),
+      redis_pool,
+      ["default"],
+    )
+    sources = {
+      cpu_time: -> { 1 }, rss: -> { 1 }, gc_count: -> { 1 },
+      gc_time: -> { 1 }, allocations: -> { 1 },
+    }
+    heartbeat = SolidJobs::Heartbeat.new(
+      config,
+      identity: "node",
+      started_at: 1.0,
+      concurrency: 1,
+      observations: SolidJobs::Observations.new(sources: sources),
+    )
+
+    assert_raises(SolidRedis::ConnectionError) do
+      heartbeat.beat(redis: {"0" => "disconnected"}, phase: :stopped)
+    end
+
+    assert_equal(
+      %w[process.observed ractor.observed redis.observed],
+      recorder.events.map(&:first),
+    )
+    assert_equal "stopped", recorder.events.fetch(1).last.fetch(:state)
+    assert_equal "disconnected", recorder.events.fetch(2).last.fetch(:connection_status)
+  end
+
   def test_engine_reports_successful_and_failed_redis_operations_to_heartbeat
     claims = Object.new
     calls = 0
