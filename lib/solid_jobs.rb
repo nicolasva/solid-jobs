@@ -12,7 +12,6 @@ require_relative "solid_jobs/ractor_support"
 require_relative "solid_jobs/startup_barrier"
 require_relative "solid_jobs/interceptor_registry"
 require_relative "solid_jobs/instrumentation"
-require_relative "solid_jobs/redis_streams_exporter"
 require_relative "solid_jobs/blueprint"
 require_relative "solid_jobs/publisher"
 require_relative "solid_jobs/lab"
@@ -97,10 +96,6 @@ module SolidJobs
 
   def redis_pool
     config.redis_pool
-  end
-
-  def redis_streams_exporter
-    config.redis_streams_exporter
   end
 
   def recovery!

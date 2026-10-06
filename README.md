@@ -178,13 +178,6 @@ SOLID_JOBS_TORTURE=1 STRESS_JOBS=100000 bundle exec rake torture
 SOLID_JOBS_SOAK=1 SOLID_JOBS_SOAK_SECONDS=86400 bundle exec rake soak
 ```
 
-The dedicated reliability matrix requires Ruby 3.4, `redis-server`, and the
-sibling `solid-trace` checkout from the development bundle:
-
-```sh
-bundle exec ruby -Itest test/reliability_matrix_test.rb
-```
-
 ## Migrating from Sidekiq
 
 There is no transparent migration path because compatibility is intentionally
@@ -203,58 +196,14 @@ The Active Job adapter remains available as
 `ActiveJob::QueueAdapters::SolidJobsAdapter`, but it writes only SolidJobs
 envelopes and keys.
 
-## Monitoring with SolidTrace
+## Instrumentation
 
-SolidJobs exposes an optional, Ractor-local instrumenter without depending on
-SolidTrace:
-
-```ruby
-SolidJobs.instrumenter = SolidTrace.instrumenter
-```
-
-The default instrumenter is a no-op. A configured instrumenter must be
-Ractor-shareable before a conductor starts. `SolidTrace.instrumenter` relays
-worker events to the pipeline configured in the calling Ractor; its relay is
-drained by SolidTrace flush/reconfiguration/shutdown. Every ordinary telemetry
-failure is logged when possible and never changes publication, execution,
+SolidJobs exposes an optional Ractor-local instrumenter and defaults to a
+no-op. Any configured instrumenter must respond to `instrument(name, payload)`
+and be Ractor-shareable before a conductor starts. Ordinary instrumentation
+failures are logged when possible and never change publication, execution,
 retry, acknowledgement, recovery, or shutdown behavior. Process-control
 interruptions still propagate so shutdown can requeue in-flight work.
-
-To publish the same v1 events to the shared Redis Streams transport, opt in and
-add the SolidJobs-owned exporter to the SolidTrace pipeline:
-
-```ruby
-SolidJobs.configure do |config|
-  config.redis_streams_enabled = true
-  config.redis_streams_key = "solid_trace:events:v1" # default
-  config.redis_streams_pool_size = 1                 # dedicated pool
-  config.redis_streams_pool_timeout = 0.1
-end
-
-SolidTrace.configure do |config|
-  config.exporters = [:solid_trace, SolidJobs.redis_streams_exporter]
-end
-
-SolidJobs.instrumenter = SolidTrace.instrumenter
-```
-
-The exporter builds a dedicated SolidRedis pool from the SolidJobs Redis
-configuration in the configuring Ractor. Redis is touched only by the
-SolidTrace exporter worker, never by `instrument`. Every event is written with
-`XADD solid_trace:events:v1 * event <json>`, where `<json>` is the canonical
-`JSON.generate(event.to_h)` v1 document. Each batch also issues approximate
-`XTRIM MINID ~` at the 15-minute ingestion cutoff.
-
-Transport attempts use SolidRedis's finite connection/read/write timeouts and
-bounded reconnect count. A failed or response-lost batch is abandoned rather
-than retried by the application. It increments exporter `dropped` and `errors`;
-the next successful batch marks the connection active and increments
-`recoveries`, without recreating lost events. `SolidTrace.stats[:exporters]`
-exposes accepted/exported/dropped counts, connection state, success/failure
-freshness, recoveries, and closure. Dispatcher saturation remains visible in
-the historical top-level SolidTrace counters. Shutdown uses the SolidTrace
-timeout budget and closes the dedicated pool; job delivery, fencing, retries,
-and results are unchanged by transport health.
 
 SolidJobs emits the v1 lifecycle events `job.enqueued`, `job.journaled`,
 `job.reserved`, `job.started`, `job.completed`, `job.failed`,
@@ -283,15 +232,6 @@ successful operations report `connected` and `SolidRedis::ConnectionError`
 reports `disconnected`. No monitoring-only Redis command is added. Redis
 latency, command, memory, and connection-count metrics remain explicitly
 `unavailable` until a reliable source exists.
-
-**SolidTrace** is a statistics and observability tool for SolidJobs. It shows
-real-time SolidJobs metrics while your application runs.
-
-![SolidTrace dashboard](docs/images/solid-trace.jpg)
-
-SolidTrace is a commercial product. If you would like to acquire it, please
-contact me at [nicolas.vandenbogaerde@gmail.com](mailto:nicolas.vandenbogaerde@gmail.com)
-or via GitHub ([@nicolasva](https://github.com/nicolasva)).
 
 ## Performance: SolidJobs vs Sidekiq
 
