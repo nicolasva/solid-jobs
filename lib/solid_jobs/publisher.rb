@@ -105,8 +105,8 @@ module SolidJobs
         end
       end
 
+      planned, ready = envelopes.partition { |envelope| envelope["run_at"] }
       @config.redis_pool.pipelined do |pipeline|
-        planned, ready = envelopes.partition { |envelope| envelope["run_at"] }
         planned.each do |envelope|
           score = envelope.delete("run_at")
           pipeline.call("ZADD", Keyspace::PLANNED, score, JSON.generate(envelope))
