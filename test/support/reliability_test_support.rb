@@ -41,6 +41,17 @@ class ReliabilityResultJob
   end
 end
 
+class ReliabilityEffectJob
+  include SolidJobs::Task
+
+  def execute_task(result_key, effects_key, value)
+    SolidJobs.config.redis_pool.pipelined do |pipeline|
+      pipeline.call("SET", result_key, value)
+      pipeline.call("INCR", effects_key)
+    end
+  end
+end
+
 class ReliabilityRetryJob
   include SolidJobs::Task
 
@@ -74,9 +85,14 @@ end
 class ReliabilityBlockingJob
   include SolidJobs::Task
 
-  def execute_task(result_key)
-    SolidJobs.config.redis_pool.call("SET", result_key, "started")
-    sleep 0.2
+  def execute_task(result_key, arrivals_key, release_key)
+    SolidJobs.config.redis_pool.call("INCR", arrivals_key)
+    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 5
+    until SolidJobs.config.redis_pool.call("GET", release_key) == "1"
+      raise "reliability barrier timed out" if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+
+      sleep 0.01
+    end
     SolidJobs.config.redis_pool.call("SET", result_key, "completed")
   end
 end

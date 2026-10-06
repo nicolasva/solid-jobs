@@ -159,11 +159,17 @@ class ReliabilityMatrixTest < Minitest::Test
 
   def test_two_ractors_keep_distinct_identity_and_ordered_jobs
     result_keys = 2.times.map { |index| isolated_key("ractor-#{index}") }
+    arrivals_key = isolated_key("ractor-arrivals")
+    release_key = isolated_key("ractor-release")
     @server = SolidJobs::Conductor.new(config: @config).start
-    first_id = ReliabilityBlockingJob.enqueue(result_keys.first)
-    wait_until(2) { lifecycle_names(first_id).include?("job.started") }
-    second_id = ReliabilityBlockingJob.enqueue(result_keys.last)
+    active_lifecycle = %w[job.enqueued job.journaled job.reserved job.started]
+    first_id = ReliabilityBlockingJob.enqueue(result_keys.first, arrivals_key, release_key)
+    wait_for_lifecycle(first_id, active_lifecycle)
+    second_id = ReliabilityBlockingJob.enqueue(result_keys.last, arrivals_key, release_key)
     job_ids = [first_id, second_id]
+    wait_until(5) { @config.redis_pool.call("GET", arrivals_key) == "2" }
+    wait_for_lifecycle(second_id, active_lifecycle)
+    @config.redis_pool.call("SET", release_key, "1")
 
     wait_until(5) { result_keys.all? { |key| @config.redis_pool.call("GET", key) == "completed" } }
     job_ids.each { |job_id| wait_for_lifecycle(job_id, LIFECYCLE) }
@@ -194,22 +200,36 @@ class ReliabilityMatrixTest < Minitest::Test
 
     SolidTrace.publish("transport.baseline", node_id: @config.identity)
     assert SolidTrace.flush(timeout: 2)
-    assert_equal true, @exporter.health.fetch(:connected)
+    baseline = @exporter.health
+    assert_equal true, baseline.fetch(:connected)
+    refute_nil baseline.dig(:last_success, :at)
     @proxy.cut!
 
     outage_key = isolated_key("outage-result")
+    outage_effects_key = isolated_key("outage-effects")
     @server = SolidJobs::Conductor.new(config: @config).start
-    outage_id = ReliabilityResultJob.enqueue(outage_key, "completed-during-outage")
+    outage_id = ReliabilityEffectJob.enqueue(
+      outage_key,
+      outage_effects_key,
+      "completed-during-outage",
+    )
     wait_until(5) { @config.redis_pool.call("GET", outage_key) == "completed-during-outage" }
     wait_until(2) do
       SolidTrace.flush(timeout: 0.1)
-      @exporter.health.fetch(:errors).positive?
+      health = @exporter.health
+      health.fetch(:errors).positive? &&
+        health.dig(:last_success, :age_seconds) > baseline.dig(:last_success, :age_seconds)
     end
     failed = @exporter.health
     assert_equal false, failed.fetch(:connected)
     assert_operator failed.fetch(:dropped), :>, 0
     assert_operator failed.fetch(:errors), :>, 0
-    assert_operator failed.dig(:last_success, :age_seconds), :>, 0
+    assert_equal baseline.dig(:last_success, :at), failed.dig(:last_success, :at)
+    assert_operator(
+      failed.dig(:last_success, :age_seconds),
+      :>,
+      baseline.dig(:last_success, :age_seconds),
+    )
     refute_nil failed.dig(:last_failure, :at)
 
     @proxy.restore!
@@ -224,12 +244,14 @@ class ReliabilityMatrixTest < Minitest::Test
     @server.stop
 
     assert_equal "completed-during-outage", @config.redis_pool.call("GET", outage_key)
+    assert_equal "1", @config.redis_pool.call("GET", outage_effects_key)
     assert_equal "completed-after-recovery", @config.redis_pool.call("GET", recovery_key)
     assert_empty lifecycle_events(outage_id), lifecycle_diagnostic(outage_id)
     assert_equal LIFECYCLE, lifecycle_names(recovery_id), lifecycle_diagnostic(recovery_id)
     recovered = @exporter.health
     assert_equal true, recovered.fetch(:connected)
     assert_operator recovered.fetch(:recoveries), :>=, 1
+    assert_operator recovered.dig(:last_success, :at), :>, baseline.dig(:last_success, :at)
     assert_operator recovered.dig(:last_failure, :age_seconds), :>=, 0
     assert_operator recovered.fetch(:dropped), :>, 0
     assert_job_finished(outage_id)
