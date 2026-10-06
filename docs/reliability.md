@@ -29,6 +29,11 @@ attempt      monotonically increasing execution count
 claimed_at   wall-clock claim time
 ```
 
+A ready payload has a short-lived publication barrier while its
+`job.enqueued` and `job.journaled` events are emitted. Executors leave marked
+payloads in READY until the publisher removes the marker. Markers expire after
+30 seconds, so a publisher crash can delay a task but cannot strand it.
+
 Completion and requeue are fenced by `claim_token`. Their Lua scripts verify
 that the executor still owns the current journal generation before changing
 state. A delayed or revived executor cannot complete or requeue a newer claim.

@@ -12,6 +12,10 @@ module SolidJobs
       if not payload then
         return nil
       end
+      if redis.call("exists", ARGV[5] .. redis.sha1hex(payload)) == 1 then
+        redis.call("rpush", KEYS[1], payload)
+        return nil
+      end
 
       redis.call("lpush", KEYS[2], payload)
       local job = cjson.decode(payload)
@@ -170,10 +174,15 @@ module SolidJobs
       else
         channels = channels.shuffle if @channel_order == :shuffle
         result = @redis_pool.blocking_call(TIMEOUT, "BRPOP", *channels, TIMEOUT)
-        result && record(
-          result.fetch(1),
-          result.fetch(0).delete_prefix("#{Keyspace::PREFIX}:channel:"),
-        )
+        return unless result
+
+        source, payload = result
+        if publication_pending?(payload)
+          @redis_pool.call("RPUSH", source, payload)
+          sleep 0.01
+          return nil
+        end
+        record(payload, source.delete_prefix("#{Keyspace::PREFIX}:channel:"))
       end
     end
 
@@ -285,7 +294,17 @@ module SolidJobs
         TIMEOUT,
         "BLMOVE", source, @claimed_key, "RIGHT", "LEFT", TIMEOUT,
       )
-      payload && record(payload, @channel_names.fetch(source))
+      return unless payload
+
+      if publication_pending?(payload)
+        @redis_pool.pipelined do |pipeline|
+          pipeline.call("LREM", @claimed_key, 1, payload)
+          pipeline.call("RPUSH", source, payload)
+        end
+        sleep 0.01
+        return nil
+      end
+      record(payload, @channel_names.fetch(source))
     end
 
     def claim_now(source)
@@ -295,7 +314,7 @@ module SolidJobs
         @redis_pool.call(
           "EVALSHA", RESERVE_SHA, 4,
           source, @claimed_key, @claims_key, Keyspace::ATTEMPTS,
-          claim_token, @identity, @processor_id, claimed_at,
+          claim_token, @identity, @processor_id, claimed_at, Keyspace::PUBLICATION_PREFIX,
         )
       rescue SolidRedis::CommandError => error
         raise unless error.message.include?("NOSCRIPT")
@@ -303,7 +322,7 @@ module SolidJobs
         @redis_pool.call(
           "EVAL", RESERVE, 4,
           source, @claimed_key, @claims_key, Keyspace::ATTEMPTS,
-          claim_token, @identity, @processor_id, claimed_at,
+          claim_token, @identity, @processor_id, claimed_at, Keyspace::PUBLICATION_PREFIX,
         )
       end
       return unless result
@@ -315,6 +334,11 @@ module SolidJobs
         claim_token: claim_token,
         attempt: Integer(attempt),
       )
+    end
+
+    def publication_pending?(payload)
+      digest = Digest::SHA1.hexdigest(payload)
+      @redis_pool.call("EXISTS", Keyspace.publication(digest)) == 1
     end
 
     def refresh_paused

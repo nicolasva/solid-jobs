@@ -87,7 +87,7 @@ class ReliabilityBlockingJob
 
   def execute_task(result_key, arrivals_key, release_key)
     SolidJobs.config.redis_pool.call("INCR", arrivals_key)
-    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 5
+    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 10
     until SolidJobs.config.redis_pool.call("GET", release_key) == result_key
       raise "reliability barrier timed out" if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
 

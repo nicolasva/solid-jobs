@@ -118,6 +118,14 @@ class IntegrityCheckTest < Minitest::Test
     )
   end
 
+  def test_reliable_claim_waits_for_publication_barrier
+    assert_claim_waits_for_publication_barrier(reliable: true)
+  end
+
+  def test_unreliable_claim_waits_for_publication_barrier
+    assert_claim_waits_for_publication_barrier(reliable: false)
+  end
+
   def test_stale_claim_cannot_complete_or_requeue_newer_generation
     identity = "host:123:identity"
     metadata_key = SolidJobs::Keyspace.claims(identity)
@@ -147,6 +155,33 @@ class IntegrityCheckTest < Minitest::Test
   end
 
   private
+
+  def assert_claim_waits_for_publication_barrier(reliable:)
+    @config.reliable_fetch = reliable
+    raw = JSON.generate(payload("publishing"))
+    marker = SolidJobs::Keyspace.publication(Digest::SHA1.hexdigest(raw))
+    channel = SolidJobs::Keyspace.channel("default")
+    @config.redis_pool.pipelined do |pipeline|
+      pipeline.call("SET", marker, "1", "PX", 10_000)
+      pipeline.call("LPUSH", channel, raw)
+    end
+    claims = SolidJobs::Claim.new(
+      @config,
+      identity: "host:123:identity",
+      processor_id: 2,
+    )
+
+    assert_nil claims.next
+    assert_equal 1, @config.redis_pool.call("LLEN", channel)
+    assert_equal 0, @config.redis_pool.call(
+      "LLEN",
+      SolidJobs::Keyspace.claimed("host:123:identity", 2),
+    )
+    assert_nil @config.redis_pool.call("HGET", SolidJobs::Keyspace::ATTEMPTS, "publishing")
+
+    @config.redis_pool.call("DEL", marker)
+    assert_equal "publishing", claims.next.envelope.fetch("id")
+  end
 
   def payload(job_id)
     {

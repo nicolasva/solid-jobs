@@ -259,6 +259,9 @@ and results are unchanged by transport health.
 SolidJobs emits the v1 lifecycle events `job.enqueued`, `job.journaled`,
 `job.reserved`, `job.started`, `job.completed`, `job.failed`,
 `job.retry_scheduled`, `job.dead`, `job.acknowledged`, and `job.recovered`.
+Ready jobs are not reservable until `job.enqueued` and `job.journaled` have
+been emitted; an expiring Redis publication barrier preserves this order
+without stranding work if a publisher exits.
 They carry correlation identifiers and structured errors, but never task
 arguments, business payloads, secrets, or textual logs. `node_id` is shared by
 all Ractors in a conductor; `ractor_id` and `worker_id` are integer processor

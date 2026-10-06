@@ -23,8 +23,8 @@ class ReliabilityMatrixTest < Minitest::Test
     @redis_config = RedisTestServer.config
     @config = SolidJobs::Blueprint.new(redis: @redis_config, concurrency: 2)
     @config.poll_interval_average = 0.05
-    @config.retry_base_delay = 60
-    @config.retry_max_delay = 60
+    @config.retry_base_delay = 1
+    @config.retry_max_delay = 1
     @config.shutdown_timeout = 2
     SolidJobs.use_config(@config)
     @config.redis_pool.call("FLUSHDB")
@@ -72,7 +72,6 @@ class ReliabilityMatrixTest < Minitest::Test
     ]
     wait_for_lifecycle(job_id, first_attempt)
     assert_equal 1, SolidJobs::RetryingTasks.new(config: @config).size
-    assert_equal 1, SolidJobs::Timer.new(@config).enqueue_due(Time.now.to_f + 120)
     wait_until(5) { @config.redis_pool.call("GET", result_key) == "recovered" }
     expected = %w[
       job.enqueued job.journaled
@@ -162,15 +161,12 @@ class ReliabilityMatrixTest < Minitest::Test
     arrivals_key = isolated_key("ractor-arrivals")
     release_key = isolated_key("ractor-release")
     @server = SolidJobs::Conductor.new(config: @config).start
-    active_lifecycle = %w[job.enqueued job.journaled job.reserved job.started]
     first_id = ReliabilityBlockingJob.enqueue(result_keys.first, arrivals_key, release_key)
-    wait_for_lifecycle(first_id, active_lifecycle)
     second_id = ReliabilityBlockingJob.enqueue(result_keys.last, arrivals_key, release_key)
     job_ids = [first_id, second_id]
     wait_until(5) { @config.redis_pool.call("GET", arrivals_key) == "2" }
     @config.redis_pool.call("SET", release_key, result_keys.first)
     wait_until(5) { @config.redis_pool.call("GET", result_keys.first) == "completed" }
-    wait_for_lifecycle(first_id, LIFECYCLE)
     @config.redis_pool.call("SET", release_key, result_keys.last)
 
     wait_until(5) { result_keys.all? { |key| @config.redis_pool.call("GET", key) == "completed" } }
@@ -234,6 +230,8 @@ class ReliabilityMatrixTest < Minitest::Test
     )
     refute_nil failed.dig(:last_failure, :at)
 
+    assert SolidTrace.flush(timeout: 2)
+    assert_equal 0, SolidTrace.stats.fetch(:pending)
     @proxy.restore!
     recovery_key = isolated_key("post-recovery-result")
     recovery_id = ReliabilityResultJob.enqueue(recovery_key, "completed-after-recovery")

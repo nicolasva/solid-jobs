@@ -10,6 +10,7 @@ module SolidJobs
     DISCARDED = "#{PREFIX}:discarded".freeze
     NODES = "#{PREFIX}:nodes".freeze
     ATTEMPTS = "#{PREFIX}:attempts".freeze
+    PUBLICATION_PREFIX = "#{PREFIX}:publication:".freeze
     PROCESSED = "#{PREFIX}:metrics:processed".freeze
     FAILED = "#{PREFIX}:metrics:failed".freeze
 
@@ -17,6 +18,10 @@ module SolidJobs
 
     def channel(name)
       "#{PREFIX}:channel:#{name}"
+    end
+
+    def publication(digest)
+      "#{PUBLICATION_PREFIX}#{digest}"
     end
 
     def node(identity)

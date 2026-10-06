@@ -2,11 +2,13 @@
 
 require "json"
 require "securerandom"
+require "digest/sha1"
 
 module SolidJobs
   class Publisher
     DEFAULT_CHUNK_SIZE = 1_000
     PLANNED_CHUNK_SIZE = 100
+    PUBLICATION_TIMEOUT_MS = 30_000
     Publication = Data.define(:task, :envelope, :redis_pool)
 
     def self.publish(envelope)
@@ -28,8 +30,8 @@ module SolidJobs
       return unless normalized
 
       validate_arguments!(normalized.fetch("arguments"))
-      persist([normalized])
-      emit_persisted(normalized)
+      ready = persist([normalized])
+      emit_persisted([normalized], ready)
       normalized.fetch("id")
     end
 
@@ -81,14 +83,14 @@ module SolidJobs
           end
           intercepted
         end
-        persist(envelopes)
-        envelopes.each { |envelope| emit_persisted(envelope) }
+        ready = persist(envelopes)
+        emit_persisted(envelopes, ready)
       end
       ids
     end
 
     def persist(envelopes)
-      return true if envelopes.empty?
+      return [] if envelopes.empty?
 
       if defined?(Lab)
         case Lab.mode
@@ -96,10 +98,10 @@ module SolidJobs
           envelopes.each do |envelope|
             Lab.captured_for(Utilities.constantize(envelope.fetch("task"))) << envelope
           end
-          return true
+          return []
         when :execute
           envelopes.each { |envelope| Lab.execute(envelope) }
-          return true
+          return []
         end
       end
 
@@ -111,14 +113,17 @@ module SolidJobs
         end
         persist_ready(pipeline, ready)
       end
-      true
+      ready
     end
 
     private
 
-    def emit_persisted(envelope)
-      Instrumentation.emit(@config, :enqueued, envelope)
-      Instrumentation.emit(@config, :journaled, envelope)
+    def emit_persisted(envelopes, ready)
+      envelopes.each do |envelope|
+        Instrumentation.emit(@config, :enqueued, envelope)
+        Instrumentation.emit(@config, :journaled, envelope)
+      end
+      release_publications(ready)
     end
 
     def normalize(envelope)
@@ -152,8 +157,24 @@ module SolidJobs
           envelope["queued_ms"] = queued_ms
           JSON.generate(envelope)
         end
+        encoded.each do |payload|
+          pipeline.call("SET", publication_key(payload), "1", "PX", PUBLICATION_TIMEOUT_MS)
+        end
         pipeline.call("LPUSH", Keyspace.channel(channel), *encoded)
       end
+    end
+
+    def publication_key(payload)
+      Keyspace.publication(Digest::SHA1.hexdigest(payload))
+    end
+
+    def release_publications(envelopes)
+      keys = envelopes.map { |envelope| publication_key(JSON.generate(envelope)) }
+      @config.redis_pool.call("DEL", *keys) unless keys.empty?
+    rescue SolidRedis::ConnectionError, SolidRedis::CommandError => error
+      @config.logger.warn(
+        "SolidJobs publication barrier release failed; waiting for expiry: #{error.class}: #{error.message}",
+      )
     end
 
     def validate_arguments!(arguments)
