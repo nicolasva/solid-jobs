@@ -45,10 +45,15 @@ module SolidJobs
         raise IOError, "Redis Streams exporter is closed" if @closed
       end
       payloads = batch.map { |event| JSON.generate(event.to_h) }
-      cutoff = ((@clock.call - RETENTION_SECONDS) * 1_000).floor
-      @pool.pipelined do |pipeline|
-        payloads.each { |payload| pipeline.call("XADD", @stream, "*", "event", payload) }
-        pipeline.call("XTRIM", @stream, "MINID", "~", "#{cutoff}-0")
+      @pool.with do |connection|
+        redis_time = connection.call("TIME")
+        redis_milliseconds =
+          (Integer(redis_time.fetch(0)) * 1_000) + (Integer(redis_time.fetch(1)) / 1_000)
+        cutoff = redis_milliseconds - (RETENTION_SECONDS * 1_000)
+        connection.pipelined do |pipeline|
+          payloads.each { |payload| pipeline.call("XADD", @stream, "*", "event", payload) }
+          pipeline.call("XTRIM", @stream, "MINID", "~", "#{cutoff}-0")
+        end
       end
       raise ShutdownError, "Redis Streams exporter closed during export" unless record_success(batch.size)
 

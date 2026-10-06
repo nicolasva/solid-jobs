@@ -12,11 +12,18 @@ class InstrumentationTest < Minitest::Test
 
   class RecordingRedisPool
     attr_reader :commands
-    attr_accessor :failure
+    attr_accessor :failure, :redis_time
 
     def initialize
       @commands = []
       @closed = false
+      @redis_time = ["5000", "500000"]
+    end
+
+    def with
+      raise failure if failure
+
+      yield self
     end
 
     def pipelined
@@ -28,6 +35,7 @@ class InstrumentationTest < Minitest::Test
 
     def call(*command)
       commands << command
+      redis_time if command == ["TIME"]
     end
 
     def close
@@ -205,11 +213,12 @@ class InstrumentationTest < Minitest::Test
     assert exporter.export([FakeEvent.new("a"), FakeEvent.new("b")])
 
     assert_equal({ size: 2, timeout: 0.25 }, redis.options)
-    assert_equal 3, redis.pool.commands.size
-    first = redis.pool.commands.fetch(0)
+    assert_equal 4, redis.pool.commands.size
+    assert_equal ["TIME"], redis.pool.commands.fetch(0)
+    first = redis.pool.commands.fetch(1)
     assert_equal ["XADD", "events", "*", "event"], first.first(4)
     assert_equal "a", JSON.parse(first.fetch(4)).dig("payload", "job_id")
-    assert_equal ["XTRIM", "events", "MINID", "~", "1100000-0"], redis.pool.commands.last
+    assert_equal ["XTRIM", "events", "MINID", "~", "4100500-0"], redis.pool.commands.last
     health = exporter.health
     assert_equal 2, health.fetch(:accepted)
     assert_equal 2, health.fetch(:exported)
