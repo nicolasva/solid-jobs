@@ -8,16 +8,12 @@ module SolidJobs
     INTERVAL = 5
     TTL = 60
 
-    def initialize(
-      config, identity:, started_at:, concurrency:, observations: Observations.new,
-      emitter: nil
-    )
+    def initialize(config, identity:, started_at:, concurrency:, observations: Observations.new)
       @config = config
       @identity = identity
       @started_at = started_at
       @concurrency = concurrency
       @observations = observations
-      @emitter = emitter || ObservationEmitter.new(config, capacity: [concurrency * 4, 16].max)
     end
 
     def beat(quiet: false, work: {}, processed: 0, failed: 0, redis: {}, phase: nil)
@@ -56,7 +52,8 @@ module SolidJobs
     end
 
     def observe(quiet: false, work: {}, redis: {}, phase: nil, observed_at: Time.now.to_f)
-      @emitter.emit(
+      Instrumentation.observe(
+        @config,
         "process.observed",
         @observations.process(node_id: @identity, observed_at: observed_at),
       )
@@ -67,13 +64,13 @@ module SolidJobs
         quiet: quiet,
         phase: phase,
         observed_at: observed_at,
-      ).each { |payload| @emitter.emit("ractor.observed", payload) }
+      ).each { |payload| Instrumentation.observe(@config, "ractor.observed", payload) }
       @observations.redis(
         node_id: @identity,
         concurrency: @concurrency,
         statuses: redis,
         observed_at: observed_at,
-      ).each { |payload| @emitter.emit("redis.observed", payload) }
+      ).each { |payload| Instrumentation.observe(@config, "redis.observed", payload) }
       true
     end
 
@@ -84,7 +81,7 @@ module SolidJobs
         status: status,
         observed_at: observed_at,
       )
-      @emitter.emit("redis.observed", payload)
+      Instrumentation.observe(@config, "redis.observed", payload)
     end
 
     def observe_ractor(
@@ -100,7 +97,7 @@ module SolidJobs
         phase: phase,
         observed_at: observed_at,
       )
-      @emitter.emit("ractor.observed", payload)
+      Instrumentation.observe(@config, "ractor.observed", payload)
     end
 
     def cleanup
@@ -110,12 +107,7 @@ module SolidJobs
         pipeline.call("DEL", Keyspace.node_work(@identity))
       end
     ensure
-      close
       @config.close
-    end
-
-    def close
-      @emitter.shutdown
     end
   end
 end

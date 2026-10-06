@@ -129,12 +129,16 @@ module SolidJobs
 
     def requeue(claim)
       requeued = claim.requeue
+      report_redis("connected")
       unless requeued
         @config.logger.warn(
           "Claim fencing rejected stale requeue: #{claim.claim_token}",
         )
       end
       requeued
+    rescue SolidRedis::ConnectionError
+      report_redis("disconnected")
+      raise
     end
 
     def retrieve

@@ -316,27 +316,6 @@ class InstrumentationTest < Minitest::Test
       recorder.events.map { |_name, payload| payload.fetch(:connection_status) },
     )
     assert recorder.events.all? { |name, _payload| name == "redis.observed" }
-  ensure
-    heartbeat&.close
-  end
-
-  def test_observation_emission_does_not_wait_for_the_instrumenter
-    blocker = Queue.new
-    instrumenter = Object.new
-    instrumenter.define_singleton_method(:instrument) do |_name, _payload|
-      blocker.pop
-    end
-    config = Struct.new(:instrumenter, :logger).new(instrumenter, Logger.new(StringIO.new))
-    emitter = SolidJobs::ObservationEmitter.new(config, capacity: 2)
-
-    started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-    assert emitter.emit("process.observed", {})
-    elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
-
-    assert_operator elapsed, :<, 0.05
-  ensure
-    blocker << true
-    emitter&.shutdown
   end
 
   def test_engine_reports_successful_and_failed_redis_operations_to_heartbeat
@@ -368,6 +347,37 @@ class InstrumentationTest < Minitest::Test
 
     assert_nil engine.send(:retrieve)
     assert_nil engine.send(:retrieve)
+    assert_equal [[:redis, 4, "connected"], [:redis, 4, "disconnected"]], messages
+  end
+
+  def test_engine_reports_successful_and_failed_requeues_to_heartbeat
+    claim_class = Struct.new(:result, :claim_token) do
+      def requeue
+        raise result if result.is_a?(Exception)
+
+        result
+      end
+    end
+    messages = []
+    heartbeat = Object.new
+    heartbeat.define_singleton_method(:send) do |message, move: nil|
+      messages << message
+      move
+    end
+    engine = SolidJobs::Engine.allocate
+    engine.instance_variable_set(:@heartbeat, heartbeat)
+    engine.instance_variable_set(:@processor_id, 4)
+    engine.instance_variable_set(:@redis_status, nil)
+    engine.instance_variable_set(
+      :@config,
+      Struct.new(:logger).new(Logger.new(StringIO.new)),
+    )
+
+    assert engine.send(:requeue, claim_class.new(true, "claim-1"))
+    error = SolidRedis::ConnectionError.new("offline")
+    assert_raises(SolidRedis::ConnectionError) do
+      engine.send(:requeue, claim_class.new(error, "claim-2"))
+    end
     assert_equal [[:redis, 4, "connected"], [:redis, 4, "disconnected"]], messages
   end
 
