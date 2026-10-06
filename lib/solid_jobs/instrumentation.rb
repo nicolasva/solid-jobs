@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "json"
+
 module SolidJobs
   module NullInstrumenter
     module_function
@@ -26,6 +28,7 @@ module SolidJobs
     module_function
 
     def emit(config, event, envelope, **attributes)
+      envelope = JSON.parse(envelope) if envelope.is_a?(String)
       payload = {
         job_id: envelope["id"],
         queue: envelope["channel"],

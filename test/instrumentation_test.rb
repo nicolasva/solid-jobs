@@ -170,6 +170,36 @@ class InstrumentationTest < Minitest::Test
     end
     assert_empty recorder.events
   end
+
+  def test_malformed_recovered_payload_does_not_change_recovery_result
+    recorder = RecordingInstrumenter.new
+    output = StringIO.new
+    claimed_key = SolidJobs::Keyspace.claimed("remote:999999:dead", 0)
+    replies = ["not-json", nil]
+    redis_pool = Object.new
+    redis_pool.define_singleton_method(:call) do |command, *_arguments|
+      case command
+      when "SCAN"
+        ["0", [claimed_key]]
+      when "HGET"
+        nil
+      when "EVAL"
+        replies.shift
+      when "DEL"
+        1
+      end
+    end
+    config = Struct.new(:redis_pool, :instrumenter, :identity, :logger).new(
+      redis_pool,
+      recorder,
+      "local:123:producer",
+      Logger.new(output),
+    )
+
+    assert_equal 1, SolidJobs::Recovery.new(config: config).call
+    assert_empty recorder.events
+    assert_match(/telemetry failed/, output.string)
+  end
 end
 
 class ExampleJob

@@ -24,7 +24,7 @@ module SolidJobs
 
         while (payload = @config.redis_pool.call("EVAL", RESTORE_ONE, 1, key))
           recovered += 1
-          Instrumentation.emit(@config, :recovered, JSON.parse(payload))
+          Instrumentation.emit(@config, :recovered, payload)
         end
         @config.redis_pool.call("DEL", key)
         @config.redis_pool.call("DEL", Keyspace.claims(identity))

@@ -50,8 +50,7 @@ module SolidJobs
           begin
             @executor.execute(envelope)
           rescue ExecutionHalt
-            requeue(claim)
-            break
+            raise
           rescue StandardError => error
             duration = ::Process.clock_gettime(::Process::CLOCK_MONOTONIC) - started_at
             Instrumentation.emit(
@@ -76,6 +75,9 @@ module SolidJobs
             Instrumentation.emit(@config, :completed, envelope, **attributes, duration: duration)
             processed += 1 if complete(claim)
           end
+        rescue ExecutionHalt
+          requeue(claim)
+          break
         ensure
           @state_mutex.synchronize { @busy = false }
           clear_work

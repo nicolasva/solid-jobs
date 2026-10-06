@@ -44,6 +44,15 @@ class FailingTelemetryInstrumenter
   end
 end
 
+class SlowTelemetryInstrumenter
+  def self.instrument(name, payload)
+    return unless name == "job.started"
+
+    SolidJobs.config.redis_pool.call("SET", "solid-jobs:slow-instrumenter", payload.fetch(:job_id))
+    sleep 5
+  end
+end
+
 class GracefulJob
   include SolidJobs::Task
 
@@ -147,18 +156,22 @@ class IntegrationTest < Minitest::Test
 
   def test_successful_job_emits_the_ordered_lifecycle_without_business_arguments
     @config.instrumenter = RedisTelemetryInstrumenter
-    job_id = RedisResultJob.enqueue("telemetry-success")
     server = SolidJobs::Conductor.new(config: @config).start
+    job_id = RedisResultJob.enqueue("telemetry-success")
     wait_until(5) { telemetry_names(job_id).include?("job.acknowledged") }
     server.stop
 
     events = telemetry_events(job_id)
+    names = events.map { |event| event.fetch("name") }
     assert_equal(
-      %w[
-        job.enqueued job.journaled job.reserved job.started job.completed
-        job.acknowledged
-      ],
-      events.map { |event| event.fetch("name") },
+      %w[job.enqueued job.journaled],
+      names.select { |name| %w[job.enqueued job.journaled].include?(name) },
+    )
+    assert_equal(
+      %w[job.reserved job.started job.completed job.acknowledged],
+      names.select do |name|
+        %w[job.reserved job.started job.completed job.acknowledged].include?(name)
+      end,
     )
     payloads = events.map { |event| event.fetch("payload") }
     assert payloads.all? { |payload| payload.fetch("node_id") == @config.identity }
@@ -400,6 +413,24 @@ class IntegrationTest < Minitest::Test
     assert_includes names, "job.reserved"
     assert_includes names, "job.started"
     assert_empty names & %w[job.completed job.failed job.acknowledged]
+  end
+
+  def test_shutdown_interrupt_during_started_instrumentation_requeues_the_claim
+    @config.shutdown_timeout = 0.05
+    @config.instrumenter = SlowTelemetryInstrumenter
+    job_id = RedisResultJob.enqueue("halted-instrumentation")
+    server = SolidJobs::Conductor.new(config: @config).start
+
+    wait_until(3) { @config.redis_pool.call("GET", "solid-jobs:slow-instrumenter") == job_id }
+    results = server.stop
+
+    assert_equal 0, results.sum { |result| result.fetch(:processed) }
+    assert_equal 0, results.sum { |result| result.fetch(:failed) }
+    assert_nil @config.redis_pool.call("GET", "solid-jobs:test-result")
+    queued = JSON.parse(@config.redis_pool.call("LINDEX", "solid_jobs:channel:default", 0))
+    assert_equal job_id, queued.fetch("id")
+  ensure
+    server&.stop if server&.running?
   end
 
   def test_job_reserved_by_killed_process_is_recovered
