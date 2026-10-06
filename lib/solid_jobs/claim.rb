@@ -187,7 +187,6 @@ module SolidJobs
       envelope = JSON.parse(payload)
       channel ||= envelope.fetch("channel")
       claim_token, attempt = register(envelope, channel) unless claim_token
-      attempt = execution_attempt(envelope, attempt)
       claim = ClaimRecord.new(
         channel: channel,
         payload: payload,
@@ -225,7 +224,7 @@ module SolidJobs
             claims_key: @claims_key,
             executor_field: @executor_field,
             claim_token: metadata.fetch("claim_token"),
-            attempt: execution_attempt(envelope, metadata.fetch("attempt")),
+            attempt: Integer(metadata.fetch("attempt")),
           )
         end
       end
@@ -260,12 +259,6 @@ module SolidJobs
         )
       end
       [claim_token, Integer(attempt)]
-    end
-
-    def execution_attempt(envelope, reservation_attempt)
-      return unless reservation_attempt
-
-      Integer(envelope.fetch("failure_count", 0)) + Integer(reservation_attempt)
     end
 
     def next_channel(channels)

@@ -84,15 +84,17 @@ class ReliabilityMatrixTest < Minitest::Test
     @server.stop
 
     assert_equal expected, lifecycle_names(job_id), lifecycle_diagnostic(job_id)
-    assert_equal [1, 2], worker_attempts(job_id).uniq
+    cycles = lifecycle_events(job_id).slice_before do |entry|
+      entry.fetch("name") == "job.enqueued"
+    end.to_a
     assert_equal(
-      %w[job.reserved job.started job.failed job.retry_scheduled job.acknowledged],
-      attempt_names(job_id, 1),
+      [
+        first_attempt,
+        %w[job.enqueued job.journaled job.reserved job.started job.completed job.acknowledged],
+      ],
+      cycles.map { |cycle| cycle.map { |entry| entry.fetch("name") } },
     )
-    assert_equal(
-      %w[job.reserved job.started job.completed job.acknowledged],
-      attempt_names(job_id, 2),
-    )
+    assert_equal [[1], [1]], cycles.map { |cycle| cycle.filter_map { |entry| entry.dig("payload", "attempt") }.uniq }
     assert_equal "2", @config.redis_pool.call("GET", attempts_key)
     assert_equal "recovered", @config.redis_pool.call("GET", result_key)
     assert_job_finished(job_id)
@@ -297,16 +299,6 @@ class ReliabilityMatrixTest < Minitest::Test
   def event(job_id, name)
     lifecycle_events(job_id).find { |entry| entry.fetch("name") == name } ||
       flunk("missing #{name} for #{job_id}: #{lifecycle_diagnostic(job_id)}")
-  end
-
-  def worker_attempts(job_id)
-    lifecycle_events(job_id).filter_map { |entry| entry.dig("payload", "attempt") }
-  end
-
-  def attempt_names(job_id, attempt)
-    lifecycle_events(job_id)
-      .select { |entry| entry.dig("payload", "attempt") == attempt }
-      .map { |entry| entry.fetch("name") }
   end
 
   def assert_job_finished(job_id, discarded: false)
