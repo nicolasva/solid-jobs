@@ -178,6 +178,13 @@ SOLID_JOBS_TORTURE=1 STRESS_JOBS=100000 bundle exec rake torture
 SOLID_JOBS_SOAK=1 SOLID_JOBS_SOAK_SECONDS=86400 bundle exec rake soak
 ```
 
+The dedicated reliability matrix requires Ruby 3.4, `redis-server`, and the
+sibling `solid-trace` checkout from the development bundle:
+
+```sh
+bundle exec ruby -Itest test/reliability_matrix_test.rb
+```
+
 ## Migrating from Sidekiq
 
 There is no transparent migration path because compatibility is intentionally
