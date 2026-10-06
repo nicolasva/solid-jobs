@@ -198,10 +198,28 @@ envelopes and keys.
 
 ## Monitoring with SolidTrace
 
+SolidJobs exposes an optional, Ractor-local instrumenter without depending on
+SolidTrace:
+
+```ruby
+SolidJobs.instrumenter = SolidTrace
+```
+
+The default instrumenter is a no-op. A configured instrumenter must be
+Ractor-shareable before a conductor starts. Every telemetry call is isolated:
+instrumenter failures are logged when possible and never change publication,
+execution, retry, acknowledgement, recovery, or shutdown behavior.
+
+SolidJobs emits the v1 lifecycle events `job.enqueued`, `job.journaled`,
+`job.reserved`, `job.started`, `job.completed`, `job.failed`,
+`job.retry_scheduled`, `job.dead`, `job.acknowledged`, and `job.recovered`.
+They carry correlation identifiers and structured errors, but never task
+arguments, business payloads, secrets, or textual logs. `node_id` is shared by
+all Ractors in a conductor; `ractor_id` and `worker_id` are integer processor
+identities. `reservation_id` is the reliable claim token.
+
 **SolidTrace** is a statistics and observability tool for SolidJobs. It shows
-real-time SolidJobs metrics while your application runs: jobs per second, CPU
-and memory usage per Ractor, queue depth, Redis latency, job flow, and recent
-job executions.
+real-time SolidJobs metrics while your application runs.
 
 ![SolidTrace dashboard](docs/images/solid-trace.jpg)
 

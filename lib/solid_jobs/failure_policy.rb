@@ -19,11 +19,22 @@ module SolidJobs
 
       if retry_allowed?(payload, failure_count, now)
         decision = retry_decision(payload, failure_count)
-        return nil if decision == :drop
+        if decision == :drop
+          emit_dead(payload)
+          return nil
+        end
         return archive(payload, now.to_f) if decision == :archive
 
         next_attempt = now.to_f + (decision || retry_delay(failure_count))
         @config.redis_pool.call("ZADD", Keyspace::RETRIES, next_attempt, JSON.generate(payload))
+        Instrumentation.emit(
+          @config,
+          :retry_scheduled,
+          payload,
+          **telemetry_attributes,
+          error_class: @error.class.name,
+          error_message: @error.message.to_s,
+        )
         append_message("retry scheduled")
         next_attempt
       else
@@ -35,6 +46,10 @@ module SolidJobs
     end
 
     private
+
+    def telemetry_attributes
+      @telemetry_attributes || {}
+    end
 
     def retry_allowed?(payload, failure_count, now)
       if payload["retry_within"]
@@ -78,7 +93,7 @@ module SolidJobs
     end
 
     def archive(payload, timestamp)
-      @config.redis_pool.pipelined do |pipeline|
+      result = @config.redis_pool.pipelined do |pipeline|
         pipeline.call("ZADD", Keyspace::DISCARDED, timestamp, JSON.generate(payload))
         pipeline.call(
           "ZREMRANGEBYSCORE",
@@ -93,6 +108,19 @@ module SolidJobs
           -(@config.discarded_limit + 1),
         )
       end
+      emit_dead(payload)
+      result
+    end
+
+    def emit_dead(payload)
+      Instrumentation.emit(
+        @config,
+        :dead,
+        payload,
+        **telemetry_attributes,
+        error_class: @error.class.name,
+        error_message: @error.message.to_s,
+      )
     end
   end
 end

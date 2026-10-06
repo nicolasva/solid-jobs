@@ -13,6 +13,37 @@ class RedisResultJob
   end
 end
 
+class TelemetryFailureJob
+  include SolidJobs::Task
+
+  def execute_task
+    raise ArgumentError, "expected failure"
+  end
+end
+
+class TelemetryBlockingJob
+  include SolidJobs::Task
+
+  def execute_task
+    SolidJobs.config.redis_pool.call("INCR", "solid-jobs:telemetry-blocking")
+    sleep 0.2
+  end
+end
+
+class RedisTelemetryInstrumenter
+  KEY = "solid-jobs:test-telemetry"
+
+  def self.instrument(name, payload)
+    SolidJobs.config.redis_pool.call("RPUSH", KEY, JSON.generate("name" => name, "payload" => payload))
+  end
+end
+
+class FailingTelemetryInstrumenter
+  def self.instrument(_name, _payload)
+    raise "telemetry unavailable"
+  end
+end
+
 class GracefulJob
   include SolidJobs::Task
 
@@ -104,11 +135,138 @@ class IntegrationTest < Minitest::Test
 
       sleep 0.02
     end
+
     results = server.stop
 
     assert_equal "completed", @config.redis_pool.call("GET", "solid-jobs:test-result")
     assert_equal 1, results.sum { |result| result.fetch(:processed) }
     assert_equal "1", @config.redis_pool.call("GET", "solid_jobs:metrics:processed")
+  ensure
+    server&.stop if server&.running?
+  end
+
+  def test_successful_job_emits_the_ordered_lifecycle_without_business_arguments
+    @config.instrumenter = RedisTelemetryInstrumenter
+    job_id = RedisResultJob.enqueue("telemetry-success")
+    server = SolidJobs::Conductor.new(config: @config).start
+    wait_until(5) { telemetry_names(job_id).include?("job.acknowledged") }
+    server.stop
+
+    events = telemetry_events(job_id)
+    assert_equal(
+      %w[
+        job.enqueued job.journaled job.reserved job.started job.completed
+        job.acknowledged
+      ],
+      events.map { |event| event.fetch("name") },
+    )
+    payloads = events.map { |event| event.fetch("payload") }
+    assert payloads.all? { |payload| payload.fetch("node_id") == @config.identity }
+    assert payloads.none? { |payload| payload.key?("arguments") || payload.key?("log") }
+    worker_payloads = payloads.select { |payload| payload.key?("ractor_id") }
+    assert worker_payloads.all? { |payload| payload["ractor_id"].is_a?(Integer) }
+    assert worker_payloads.all? { |payload| payload["worker_id"] == payload["ractor_id"] }
+    assert events.find { |event| event["name"] == "job.completed" }.fetch("payload").fetch("duration") >= 0
+  ensure
+    server&.stop if server&.running?
+  end
+
+  def test_retryable_and_terminal_failures_emit_retry_dead_and_acknowledgement
+    @config.instrumenter = RedisTelemetryInstrumenter
+    retry_id = SolidJobs::Publisher.new(config: @config).publish(
+      "task" => TelemetryFailureJob,
+      "arguments" => [],
+      "channel" => "default",
+      "max_failures" => 1,
+    )
+    dead_id = SolidJobs::Publisher.new(config: @config).publish(
+      "task" => TelemetryFailureJob,
+      "arguments" => [],
+      "channel" => "default",
+      "max_failures" => 0,
+    )
+    server = SolidJobs::Conductor.new(config: @config).start
+    wait_until(5) do
+      telemetry_names(retry_id).include?("job.acknowledged") &&
+        telemetry_names(dead_id).include?("job.acknowledged")
+    end
+    server.stop
+
+    assert_equal(
+      %w[job.enqueued job.journaled job.reserved job.started job.failed job.retry_scheduled job.acknowledged],
+      telemetry_names(retry_id),
+    )
+    assert_equal(
+      %w[job.enqueued job.journaled job.reserved job.started job.failed job.dead job.acknowledged],
+      telemetry_names(dead_id),
+    )
+    failed = telemetry_events(dead_id).find { |event| event["name"] == "job.failed" }.fetch("payload")
+    assert_equal "ArgumentError", failed.fetch("error_class")
+    assert_equal "expected failure", failed.fetch("error_message")
+    assert_equal 1, failed.fetch("attempt")
+  ensure
+    server&.stop if server&.running?
+  end
+
+  def test_recovery_emits_only_after_the_job_is_restored
+    @config.instrumenter = RedisTelemetryInstrumenter
+    identity = "#{Socket.gethostname}:999999:dead"
+    claimed = SolidJobs::Keyspace.claimed(identity, 0)
+    envelope = {
+      "id" => "recovered-job",
+      "task" => "RedisResultJob",
+      "arguments" => ["secret"],
+      "channel" => "default",
+    }
+    @config.redis_pool.call("LPUSH", claimed, JSON.generate(envelope))
+
+    assert_equal 1, SolidJobs::Recovery.call(config: @config).result
+
+    assert_equal ["job.recovered"], telemetry_names("recovered-job")
+    restored = JSON.parse(@config.redis_pool.call("LINDEX", SolidJobs::Keyspace.channel("default"), 0))
+    assert_equal "recovered-job", restored.fetch("id")
+  end
+
+  def test_failing_instrumenter_does_not_change_success_or_terminal_failure
+    @config.concurrency = 1
+    @config.instrumenter = FailingTelemetryInstrumenter
+    success_id = RedisResultJob.enqueue("instrumenter-failed")
+    failure_id = SolidJobs::Publisher.new(config: @config).publish(
+      "task" => TelemetryFailureJob,
+      "arguments" => [],
+      "channel" => "default",
+      "max_failures" => 0,
+    )
+    server = SolidJobs::Conductor.new(config: @config).start
+    wait_until(5) do
+      @config.redis_pool.call("GET", "solid-jobs:test-result") == "instrumenter-failed" &&
+        SolidJobs::DiscardedTasks.new(config: @config).to_a.any? { |task| task.id == failure_id }
+    end
+    results = server.stop
+
+    assert_equal "instrumenter-failed", @config.redis_pool.call("GET", "solid-jobs:test-result")
+    assert_equal 1, results.sum { |result| result.fetch(:processed) }
+    assert_equal 1, results.sum { |result| result.fetch(:failed) }
+    assert_nil @config.redis_pool.call("HGET", SolidJobs::Keyspace::ATTEMPTS, success_id)
+  ensure
+    server&.stop if server&.running?
+  end
+
+  def test_worker_ractors_share_node_identity_and_use_distinct_integer_ids
+    @config.instrumenter = RedisTelemetryInstrumenter
+    job_ids = 2.times.map { TelemetryBlockingJob.enqueue }
+    server = SolidJobs::Conductor.new(config: @config).start
+    wait_until(5) do
+      job_ids.sum { |job_id| telemetry_names(job_id).count("job.started") } == 2
+    end
+    server.stop
+
+    started = job_ids.map do |job_id|
+      telemetry_events(job_id).find { |event| event["name"] == "job.started" }.fetch("payload")
+    end
+    assert_equal [@config.identity], started.map { |payload| payload.fetch("node_id") }.uniq
+    assert_equal [0, 1], started.map { |payload| payload.fetch("ractor_id") }.sort
+    assert started.all? { |payload| payload["worker_id"] == payload["ractor_id"] }
   ensure
     server&.stop if server&.running?
   end
@@ -225,7 +383,8 @@ class IntegrationTest < Minitest::Test
 
   def test_shutdown_timeout_interrupts_and_requeues_running_job
     @config.shutdown_timeout = 0.05
-    GracefulJob.enqueue(2)
+    @config.instrumenter = RedisTelemetryInstrumenter
+    job_id = GracefulJob.enqueue(2)
     server = SolidJobs::Conductor.new(config: @config).start
     wait_until(3) { @config.redis_pool.call("GET", "solid-jobs:graceful-started") == "1" }
 
@@ -236,6 +395,11 @@ class IntegrationTest < Minitest::Test
     assert_operator elapsed, :<, 1
     assert_equal 1, @config.redis_pool.call("LLEN", "solid_jobs:channel:default")
     assert_nil @config.redis_pool.call("GET", "solid-jobs:graceful-completed")
+    names = telemetry_names(job_id)
+    assert_equal %w[job.enqueued job.journaled], names.first(2)
+    assert_includes names, "job.reserved"
+    assert_includes names, "job.started"
+    assert_empty names & %w[job.completed job.failed job.acknowledged]
   end
 
   def test_job_reserved_by_killed_process_is_recovered
@@ -457,6 +621,16 @@ class IntegrationTest < Minitest::Test
   end
 
   private
+
+  def telemetry_events(job_id)
+    @config.redis_pool.call("LRANGE", RedisTelemetryInstrumenter::KEY, 0, -1)
+      .map { |raw| JSON.parse(raw) }
+      .select { |event| event.fetch("payload").fetch("job_id") == job_id }
+  end
+
+  def telemetry_names(job_id)
+    telemetry_events(job_id).map { |event| event.fetch("name") }
+  end
 
   def scan_keys(pattern)
     cursor = "0"

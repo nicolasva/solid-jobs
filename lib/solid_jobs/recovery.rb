@@ -22,8 +22,9 @@ module SolidJobs
         identity = node_key.delete_prefix("#{Keyspace::PREFIX}:node:")
         next if alive?(identity)
 
-        while @config.redis_pool.call("EVAL", RESTORE_ONE, 1, key)
+        while (payload = @config.redis_pool.call("EVAL", RESTORE_ONE, 1, key))
           recovered += 1
+          Instrumentation.emit(@config, :recovered, JSON.parse(payload))
         end
         @config.redis_pool.call("DEL", key)
         @config.redis_pool.call("DEL", Keyspace.claims(identity))

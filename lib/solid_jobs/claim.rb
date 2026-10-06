@@ -131,6 +131,7 @@ module SolidJobs
     end
 
     def initialize(config, identity: nil, processor_id: nil)
+      @config = config
       @redis_pool = config.redis_pool
       @channel_order = config.channel_order
       @reliable = config.reliable_fetch
@@ -186,7 +187,7 @@ module SolidJobs
       envelope = JSON.parse(payload)
       channel ||= envelope.fetch("channel")
       claim_token, attempt = register(envelope, channel) unless claim_token
-      ClaimRecord.new(
+      claim = ClaimRecord.new(
         channel: channel,
         payload: payload,
         envelope: envelope,
@@ -197,6 +198,15 @@ module SolidJobs
         claim_token: claim_token,
         attempt: attempt,
       )
+      Instrumentation.emit(
+        @config,
+        :reserved,
+        envelope,
+        reservation_id: claim_token,
+        attempt: attempt,
+        **Instrumentation.worker_attributes(@processor_id),
+      )
+      claim
     end
 
     def existing_claim(payload)

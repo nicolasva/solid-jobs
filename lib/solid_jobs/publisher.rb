@@ -29,6 +29,7 @@ module SolidJobs
 
       validate_arguments!(normalized.fetch("arguments"))
       persist([normalized])
+      emit_persisted(normalized)
       normalized.fetch("id")
     end
 
@@ -81,6 +82,7 @@ module SolidJobs
           intercepted
         end
         persist(envelopes)
+        envelopes.each { |envelope| emit_persisted(envelope) }
       end
       ids
     end
@@ -113,6 +115,11 @@ module SolidJobs
     end
 
     private
+
+    def emit_persisted(envelope)
+      Instrumentation.emit(@config, :enqueued, envelope)
+      Instrumentation.emit(@config, :journaled, envelope)
+    end
 
     def normalize(envelope)
       raise InvalidJobError, "Task envelope must be a Hash" unless envelope.is_a?(Hash)

@@ -11,6 +11,7 @@ require_relative "solid_jobs/keyspace"
 require_relative "solid_jobs/ractor_support"
 require_relative "solid_jobs/startup_barrier"
 require_relative "solid_jobs/interceptor_registry"
+require_relative "solid_jobs/instrumentation"
 require_relative "solid_jobs/blueprint"
 require_relative "solid_jobs/publisher"
 require_relative "solid_jobs/lab"
@@ -42,6 +43,14 @@ module SolidJobs
   def configure
     yield config
     config
+  end
+
+  def instrumenter
+    config.instrumenter
+  end
+
+  def instrumenter=(value)
+    config.instrumenter = value
   end
 
   def use_config(configuration)

@@ -1,7 +1,5 @@
 # frozen_string_literal: true
 
-require "securerandom"
-require "socket"
 require "timeout"
 
 module SolidJobs
@@ -20,7 +18,7 @@ module SolidJobs
       @scheduler = nil
       @heartbeat = nil
       @started = false
-      @identity = "#{Socket.gethostname}:#{::Process.pid}:#{SecureRandom.hex(6)}".freeze
+      @identity = config.identity
       @started_at = Time.now.to_f
     end
 
@@ -29,7 +27,7 @@ module SolidJobs
 
       warn_ruby34_multi_ractor
       snapshot = Utilities.shareable_copy(
-        config.ractor_snapshot.merge(identity: identity, started_at: @started_at),
+        config.ractor_snapshot.merge(started_at: @started_at),
       )
       Recovery.call(config: config)
       barrier = StartupBarrier.new(config.concurrency + 2)

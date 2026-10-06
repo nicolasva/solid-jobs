@@ -1,6 +1,8 @@
 # frozen_string_literal: true
 
 require "logger"
+require "securerandom"
+require "socket"
 
 module SolidJobs
   class Blueprint
@@ -11,9 +13,9 @@ module SolidJobs
 
     attr_accessor :concurrency, :discarded_limit, :discarded_retention, :logger,
       :on_complex_arguments, :poll_interval_average, :shutdown_timeout,
-      :reliable_fetch, :retry_base_delay, :retry_max_delay
+      :reliable_fetch, :retry_base_delay, :retry_max_delay, :instrumenter
     attr_reader :default_task_options, :error_handlers, :execute_interceptors,
-      :publish_interceptors, :redis_config
+      :publish_interceptors, :redis_config, :identity
 
     def initialize(redis: nil, concurrency: 5, channels: ["default"])
       @redis_config = redis || SolidRedis.config(url: ENV.fetch("REDIS_URL", "redis://127.0.0.1:6379/0"))
@@ -34,6 +36,8 @@ module SolidJobs
       @discarded_limit = 10_000
       @discarded_retention = 180 * 24 * 60 * 60
       @logger = Logger.new($stdout)
+      @identity = "#{Socket.gethostname}:#{::Process.pid}:#{SecureRandom.hex(6)}".freeze
+      @instrumenter = NullInstrumenter
       @redis_pool = nil
     end
 
@@ -115,6 +119,10 @@ module SolidJobs
     end
 
     def ractor_snapshot
+      unless Ractor.shareable?(instrumenter)
+        raise ArgumentError, "SolidJobs instrumenter must be Ractor-shareable"
+      end
+
       Utilities.shareable_copy(
         redis_config: redis_config,
         concurrency: concurrency,
@@ -131,6 +139,8 @@ module SolidJobs
         retry_max_delay: retry_max_delay,
         publish_interceptors: publish_interceptors.export,
         execute_interceptors: execute_interceptors.export,
+        identity: identity,
+        instrumenter: instrumenter,
       )
     end
 
@@ -152,6 +162,8 @@ module SolidJobs
       config.retry_max_delay = snapshot.fetch(:retry_max_delay)
       config.publish_interceptors.import(snapshot.fetch(:publish_interceptors))
       config.execute_interceptors.import(snapshot.fetch(:execute_interceptors))
+      config.instance_variable_set(:@identity, snapshot.fetch(:identity))
+      config.instrumenter = snapshot.fetch(:instrumenter)
       config
     end
 
