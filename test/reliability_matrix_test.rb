@@ -168,8 +168,10 @@ class ReliabilityMatrixTest < Minitest::Test
     second_id = ReliabilityBlockingJob.enqueue(result_keys.last, arrivals_key, release_key)
     job_ids = [first_id, second_id]
     wait_until(5) { @config.redis_pool.call("GET", arrivals_key) == "2" }
-    wait_for_lifecycle(second_id, active_lifecycle)
-    @config.redis_pool.call("SET", release_key, "1")
+    @config.redis_pool.call("SET", release_key, result_keys.first)
+    wait_until(5) { @config.redis_pool.call("GET", result_keys.first) == "completed" }
+    wait_for_lifecycle(first_id, LIFECYCLE)
+    @config.redis_pool.call("SET", release_key, result_keys.last)
 
     wait_until(5) { result_keys.all? { |key| @config.redis_pool.call("GET", key) == "completed" } }
     job_ids.each { |job_id| wait_for_lifecycle(job_id, LIFECYCLE) }
