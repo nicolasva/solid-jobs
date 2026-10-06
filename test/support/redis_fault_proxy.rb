@@ -14,6 +14,8 @@ class RedisFaultProxy
     @connections = []
     @enabled = true
     @drop_command = nil
+    @delay_command = nil
+    @delay_seconds = nil
   end
 
   def start
@@ -43,6 +45,13 @@ class RedisFaultProxy
     @mutex.synchronize { @drop_command = command.to_s.upcase }
   end
 
+  def delay_next_response_for!(command, seconds)
+    @mutex.synchronize do
+      @delay_command = command.to_s.upcase
+      @delay_seconds = Float(seconds)
+    end
+  end
+
   def stop
     @server&.close
     cut!
@@ -70,7 +79,7 @@ class RedisFaultProxy
   end
 
   def proxy_connection(client, upstream)
-    state = {drop_response: false}
+    state = {drop_response: false, delay_response: nil}
     request = Thread.new { forward_requests(client, upstream, state) }
     response = Thread.new { forward_responses(upstream, client, state) }
     request.join
@@ -94,6 +103,15 @@ class RedisFaultProxy
             state[:drop_response] = true
           end
         end
+        delay_command, delay_seconds = @mutex.synchronize { [@delay_command, @delay_seconds] }
+        if delay_command && buffer.include?("\r\n$#{delay_command.bytesize}\r\n#{delay_command}\r\n")
+          @mutex.synchronize do
+            if @delay_command == delay_command
+              @delay_command = @delay_seconds = nil
+              state[:delay_response] = delay_seconds
+            end
+          end
+        end
       end
       buffer = buffer.byteslice(-128, 128) || buffer
       upstream.write(chunk)
@@ -107,6 +125,9 @@ class RedisFaultProxy
   def forward_responses(upstream, client, state)
     loop do
       chunk = upstream.readpartial(16_384)
+      if (delay = state.delete(:delay_response))
+        sleep delay
+      end
       if state[:drop_response]
         client.close
         upstream.close
@@ -128,4 +149,3 @@ class RedisFaultProxy
     @mutex.synchronize { sockets.each { |socket| @connections.delete(socket) } }
   end
 end
-

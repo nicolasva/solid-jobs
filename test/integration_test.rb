@@ -5,6 +5,13 @@ require_relative "support/redis_test_server"
 require_relative "support/redis_fault_proxy"
 require "rbconfig"
 
+SOLID_TRACE_AVAILABLE = begin
+  require "solid_trace"
+  true
+rescue LoadError
+  false
+end
+
 class RedisResultJob
   include SolidJobs::Task
 
@@ -102,8 +109,176 @@ class IntegrationTest < Minitest::Test
   end
 
   def teardown
+    SolidTrace.reset! if SOLID_TRACE_AVAILABLE
     @config.close
     super
+  end
+
+  def test_real_ractors_publish_correlatable_v1_events_to_redis_stream
+    skip "requires the sibling solid-trace checkout" unless SOLID_TRACE_AVAILABLE
+
+    @config.redis_streams_enabled = true
+    exporter = @config.redis_streams_exporter
+    SolidTrace.configure do |config|
+      config.exporters = [exporter]
+      config.batch_size = 32
+      config.flush_interval = 0.01
+    end
+    @config.instrumenter = SolidTrace.instrumenter
+    server = SolidJobs::Conductor.new(config: @config).start
+    job_id = RedisResultJob.enqueue("streamed")
+    wait_until(5) { @config.redis_pool.call("GET", "solid-jobs:test-result") == "streamed" }
+    wait_until(5) do
+      SolidTrace.flush(timeout: 0.1)
+      names = stream_events(@config.redis_streams_key).map { |event| event.fetch("name") }
+      (%w[process.observed ractor.observed redis.observed] - names).empty?
+    end
+    server.stop
+    assert SolidTrace.flush
+
+    events = stream_events(@config.redis_streams_key)
+    lifecycle = events.select { |event| event.dig("payload", "job_id") == job_id }
+    assert_includes lifecycle.map { |event| event.fetch("name") }, "job.started"
+    assert_includes lifecycle.map { |event| event.fetch("name") }, "job.acknowledged"
+    assert lifecycle.all? { |event| event.fetch("schema") == 1 }
+    assert lifecycle.all? { |event| event.dig("payload", "node_id") == @config.identity }
+    assert lifecycle.none? { |event| event.dig("payload").key?("arguments") }
+    assert lifecycle.any? { |event| event.dig("payload", "ractor_id").is_a?(Integer) }
+    assert_empty(
+      %w[process.observed ractor.observed redis.observed] - events.map { |event| event.fetch("name") },
+    )
+    ids = @config.redis_pool.call("XRANGE", @config.redis_streams_key, "-", "+").map(&:first)
+    assert_equal ids, ids.sort_by { |id| id.split("-").map(&:to_i) }
+    health = SolidTrace.stats.dig(:exporters, 0, :health)
+    assert_equal true, health.fetch(:connected)
+    assert_equal health.fetch(:accepted), health.fetch(:exported)
+  ensure
+    server&.stop if server&.running?
+  end
+
+  def test_redis_stream_outage_and_recovery_do_not_change_job_results
+    skip "requires the sibling solid-trace checkout" unless SOLID_TRACE_AVAILABLE
+
+    proxy = RedisFaultProxy.new(@redis_config.server_url).start
+    transport_config = SolidRedis::Config.new(
+      url: proxy.url,
+      timeout: 0.05,
+      reconnect_attempts: 0,
+    )
+    exporter = SolidJobs::RedisStreamsExporter.new(redis_config: transport_config)
+    SolidTrace.configure do |config|
+      config.exporters = [exporter]
+      config.batch_size = 1
+      config.flush_interval = 0.01
+    end
+    @config.instrumenter = SolidTrace.instrumenter
+    SolidTrace.publish("transport.baseline", node_id: @config.identity)
+    assert SolidTrace.flush(timeout: 2)
+    assert_equal true, exporter.health.fetch(:connected)
+    proxy.cut!
+
+    first_id = RedisResultJob.enqueue("outage-result")
+    server = SolidJobs::Conductor.new(config: @config).start
+    wait_until(5) { @config.redis_pool.call("GET", "solid-jobs:test-result") == "outage-result" }
+    assert SolidTrace.flush(timeout: 2)
+    failed = exporter.health
+    assert_equal false, failed.fetch(:connected)
+    assert_operator failed.fetch(:dropped), :>, 0
+    assert_operator failed.fetch(:errors), :>, 0
+    refute_nil failed.dig(:last_success, :at)
+    assert_operator failed.dig(:last_success, :age_seconds), :>=, 0
+
+    proxy.restore!
+    second_id = RedisResultJob.enqueue("recovery-result")
+    wait_until(5) { @config.redis_pool.call("GET", "solid-jobs:test-result") == "recovery-result" }
+    wait_until(2) { SolidTrace.flush(timeout: 0.1) && exporter.health.fetch(:connected) }
+    server.stop
+
+    assert_equal "recovery-result", @config.redis_pool.call("GET", "solid-jobs:test-result")
+    recovered = exporter.health
+    assert_equal true, recovered.fetch(:connected)
+    assert_operator recovered.fetch(:recoveries), :>=, 1
+    assert_operator recovered.dig(:last_failure, :age_seconds), :>=, 0
+    assert stream_events.any? { |event| event.dig("payload", "job_id") == second_id }
+    refute stream_events.any? { |event| event.dig("payload", "job_id") == first_id }
+  ensure
+    server&.stop if server&.running?
+    proxy&.stop
+  end
+
+  def test_lost_redis_stream_response_is_counted_without_recreating_the_event
+    skip "requires the sibling solid-trace checkout" unless SOLID_TRACE_AVAILABLE
+
+    proxy = RedisFaultProxy.new(@redis_config.server_url).start
+    transport_config = SolidRedis::Config.new(
+      url: proxy.url,
+      timeout: 0.05,
+      reconnect_attempts: 0,
+    )
+    exporter = SolidJobs::RedisStreamsExporter.new(redis_config: transport_config)
+    SolidTrace.configure do |config|
+      config.exporters = [exporter]
+      config.batch_size = 1
+      config.flush_interval = 0.01
+    end
+    proxy.drop_next_response_for!("XADD")
+
+    SolidTrace.publish("job.started", job_id: "response-lost", node_id: @config.identity)
+    assert SolidTrace.flush(timeout: 2)
+
+    health = exporter.health
+    assert_equal 1, health.fetch(:accepted)
+    assert_equal 0, health.fetch(:exported)
+    assert_equal 1, health.fetch(:dropped)
+    assert_equal 1, health.fetch(:errors)
+    matching = stream_events.select { |event| event.dig("payload", "job_id") == "response-lost" }
+    assert_operator matching.size, :<=, 1
+  ensure
+    proxy&.stop
+  end
+
+  def test_slow_redis_stream_transport_keeps_producer_and_shutdown_bounded
+    skip "requires the sibling solid-trace checkout" unless SOLID_TRACE_AVAILABLE
+
+    proxy = RedisFaultProxy.new(@redis_config.server_url).start
+    transport_config = SolidRedis::Config.new(
+      url: proxy.url,
+      timeout: 1,
+      reconnect_attempts: 0,
+    )
+    exporter = SolidJobs::RedisStreamsExporter.new(redis_config: transport_config)
+    SolidTrace.configure do |config|
+      config.exporters = [exporter]
+      config.buffer_size = 2
+      config.batch_size = 1
+      config.flush_interval = 0.01
+    end
+    proxy.delay_next_response_for!("XADD", 0.3)
+    SolidTrace.publish("job.started", job_id: "blocking", node_id: @config.identity)
+    sleep 0.02
+
+    started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    results = 1_000.times.map do |index|
+      SolidTrace.publish("job.started", job_id: "queued-#{index}", node_id: @config.identity)
+    end
+    publish_elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
+    stats = SolidTrace.stats
+    dispatcher = SolidTrace.send(:state).dispatcher
+
+    assert_operator publish_elapsed, :<, 0.5
+    assert_includes results, false
+    assert_operator stats.fetch(:dropped), :>, 900
+    shutdown_started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    SolidTrace.shutdown(timeout: 0.05)
+    shutdown_elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - shutdown_started
+    assert_operator shutdown_elapsed, :<, 0.2
+    assert exporter.health.fetch(:closed)
+    stopped = dispatcher.stats
+    assert_equal 0, stopped.fetch(:pending)
+    assert_operator stopped.fetch(:dropped), :>=, stats.fetch(:dropped)
+    sleep 0.35
+  ensure
+    proxy&.stop
   end
 
   def test_publisher_writes_solid_jobs_envelope
@@ -725,6 +900,12 @@ class IntegrationTest < Minitest::Test
       raise "condition not reached in #{timeout}s" if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
 
       sleep 0.01
+    end
+  end
+
+  def stream_events(key = "solid_trace:events:v1")
+    @config.redis_pool.call("XRANGE", key, "-", "+").map do |_id, fields|
+      JSON.parse(Hash[*fields].fetch("event"))
     end
   end
 end

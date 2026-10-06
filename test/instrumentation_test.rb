@@ -4,6 +4,54 @@ require_relative "test_helper"
 require "stringio"
 
 class InstrumentationTest < Minitest::Test
+  FakeEvent = Data.define(:value) do
+    def to_h
+      { name: "job.started", schema: 1, payload: { job_id: value } }
+    end
+  end
+
+  class RecordingRedisPool
+    attr_reader :commands
+    attr_accessor :failure
+
+    def initialize
+      @commands = []
+      @closed = false
+    end
+
+    def pipelined
+      raise failure if failure
+
+      yield self
+      commands.map { "1-0" }
+    end
+
+    def call(*command)
+      commands << command
+    end
+
+    def close
+      @closed = true
+    end
+
+    def closed?
+      @closed
+    end
+  end
+
+  class RecordingRedisConfig
+    attr_reader :pool, :options
+
+    def initialize
+      @pool = RecordingRedisPool.new
+    end
+
+    def new_pool(**options)
+      @options = options
+      pool
+    end
+  end
+
   class RecordingInstrumenter
     attr_reader :events
 
@@ -125,6 +173,97 @@ class InstrumentationTest < Minitest::Test
     error = assert_raises(ArgumentError) { SolidJobs.config.ractor_snapshot }
 
     assert_match(/Ractor-shareable/, error.message)
+  end
+
+  def test_redis_streams_exporter_is_explicit_and_uses_solid_jobs_redis_config
+    assert_nil SolidJobs.redis_streams_exporter
+
+    SolidJobs.config.redis_streams_enabled = true
+    SolidJobs.config.redis_streams_key = "custom:telemetry"
+    SolidJobs.config.redis_streams_pool_size = 2
+    SolidJobs.config.redis_streams_pool_timeout = 0.25
+    exporter = SolidJobs.redis_streams_exporter
+
+    assert_instance_of SolidJobs::RedisStreamsExporter, exporter
+    assert_equal "custom:telemetry", exporter.health.fetch(:stream)
+  ensure
+    exporter&.shutdown
+  end
+
+  def test_redis_streams_exporter_publishes_json_and_trims_each_batch
+    redis = RecordingRedisConfig.new
+    wall_now = 2_000.0
+    exporter = SolidJobs::RedisStreamsExporter.new(
+      redis_config: redis,
+      stream: "events",
+      pool_size: 2,
+      pool_timeout: 0.25,
+      clock: -> { wall_now },
+      monotonic_clock: -> { 10.0 },
+    )
+
+    assert exporter.export([FakeEvent.new("a"), FakeEvent.new("b")])
+
+    assert_equal({ size: 2, timeout: 0.25 }, redis.options)
+    assert_equal 3, redis.pool.commands.size
+    first = redis.pool.commands.fetch(0)
+    assert_equal ["XADD", "events", "*", "event"], first.first(4)
+    assert_equal "a", JSON.parse(first.fetch(4)).dig("payload", "job_id")
+    assert_equal ["XTRIM", "events", "MINID", "~", "1100000-0"], redis.pool.commands.last
+    health = exporter.health
+    assert_equal 2, health.fetch(:accepted)
+    assert_equal 2, health.fetch(:exported)
+    assert_equal 0, health.fetch(:dropped)
+    assert_equal true, health.fetch(:connected)
+    assert health.frozen?
+    assert health.fetch(:last_success).frozen?
+    assert_raises(FrozenError) { health[:connected] = false }
+  ensure
+    exporter&.shutdown
+  end
+
+  def test_redis_streams_exporter_counts_abandoned_batch_and_recovery
+    redis = RecordingRedisConfig.new
+    wall_now = 2_000.0
+    monotonic_now = 10.0
+    exporter = SolidJobs::RedisStreamsExporter.new(
+      redis_config: redis,
+      clock: -> { wall_now },
+      monotonic_clock: -> { monotonic_now },
+    )
+    redis.pool.failure = SolidRedis::ConnectionError.new("offline")
+
+    assert_raises(SolidRedis::ConnectionError) { exporter.export([FakeEvent.new("lost")]) }
+    failed = exporter.health
+    assert_equal 1, failed.fetch(:accepted)
+    assert_equal 1, failed.fetch(:dropped)
+    assert_equal 1, failed.fetch(:errors)
+    assert_equal false, failed.fetch(:connected)
+    assert_equal 2_000.0, failed.dig(:last_failure, :at)
+
+    redis.pool.failure = nil
+    wall_now = 2_002.0
+    monotonic_now = 12.0
+    assert exporter.export([FakeEvent.new("recovered")])
+    recovered = exporter.health
+    assert_equal 1, recovered.fetch(:recoveries)
+    assert_equal true, recovered.fetch(:connected)
+    assert_equal 1, recovered.fetch(:exported)
+    assert_equal 2.0, recovered.dig(:last_failure, :age_seconds)
+  ensure
+    exporter&.shutdown
+  end
+
+  def test_redis_streams_exporter_shutdown_closes_its_dedicated_pool
+    redis = RecordingRedisConfig.new
+    exporter = SolidJobs::RedisStreamsExporter.new(redis_config: redis)
+
+    exporter.shutdown
+
+    assert redis.pool.closed?
+    assert exporter.health.fetch(:closed)
+    assert_raises(IOError) { exporter.export([FakeEvent.new("late")]) }
+    assert_equal 1, exporter.health.fetch(:dropped)
   end
 
   def test_batch_planned_and_lab_publications_emit_after_acceptance

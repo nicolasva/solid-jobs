@@ -13,7 +13,9 @@ module SolidJobs
 
     attr_accessor :concurrency, :discarded_limit, :discarded_retention, :logger,
       :on_complex_arguments, :poll_interval_average, :shutdown_timeout,
-      :reliable_fetch, :retry_base_delay, :retry_max_delay, :instrumenter
+      :reliable_fetch, :retry_base_delay, :retry_max_delay, :instrumenter,
+      :redis_streams_enabled, :redis_streams_key, :redis_streams_pool_size,
+      :redis_streams_pool_timeout
     attr_reader :default_task_options, :error_handlers, :execute_interceptors,
       :publish_interceptors, :redis_config, :identity
 
@@ -38,6 +40,10 @@ module SolidJobs
       @logger = Logger.new($stdout)
       @identity = "#{Socket.gethostname}:#{::Process.pid}:#{SecureRandom.hex(6)}".freeze
       @instrumenter = NullInstrumenter
+      @redis_streams_enabled = false
+      @redis_streams_key = "solid_trace:events:v1"
+      @redis_streams_pool_size = 1
+      @redis_streams_pool_timeout = 0.1
       @redis_pool = nil
     end
 
@@ -52,6 +58,17 @@ module SolidJobs
 
     def redis
       redis_pool.with { |connection| yield connection }
+    end
+
+    def redis_streams_exporter
+      return unless redis_streams_enabled
+
+      RedisStreamsExporter.new(
+        redis_config: redis_config,
+        stream: redis_streams_key,
+        pool_size: redis_streams_pool_size,
+        pool_timeout: redis_streams_pool_timeout,
+      )
     end
 
     def channels

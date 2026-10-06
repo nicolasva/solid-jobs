@@ -213,6 +213,42 @@ failure is logged when possible and never changes publication, execution,
 retry, acknowledgement, recovery, or shutdown behavior. Process-control
 interruptions still propagate so shutdown can requeue in-flight work.
 
+To publish the same v1 events to the shared Redis Streams transport, opt in and
+add the SolidJobs-owned exporter to the SolidTrace pipeline:
+
+```ruby
+SolidJobs.configure do |config|
+  config.redis_streams_enabled = true
+  config.redis_streams_key = "solid_trace:events:v1" # default
+  config.redis_streams_pool_size = 1                 # dedicated pool
+  config.redis_streams_pool_timeout = 0.1
+end
+
+SolidTrace.configure do |config|
+  config.exporters = [:solid_trace, SolidJobs.redis_streams_exporter]
+end
+
+SolidJobs.instrumenter = SolidTrace.instrumenter
+```
+
+The exporter builds a dedicated SolidRedis pool from the SolidJobs Redis
+configuration in the configuring Ractor. Redis is touched only by the
+SolidTrace exporter worker, never by `instrument`. Every event is written with
+`XADD solid_trace:events:v1 * event <json>`, where `<json>` is the canonical
+`JSON.generate(event.to_h)` v1 document. Each batch also issues approximate
+`XTRIM MINID ~` at the 15-minute ingestion cutoff.
+
+Transport attempts use SolidRedis's finite connection/read/write timeouts and
+bounded reconnect count. A failed or response-lost batch is abandoned rather
+than retried by the application. It increments exporter `dropped` and `errors`;
+the next successful batch marks the connection active and increments
+`recoveries`, without recreating lost events. `SolidTrace.stats[:exporters]`
+exposes accepted/exported/dropped counts, connection state, success/failure
+freshness, recoveries, and closure. Dispatcher saturation remains visible in
+the historical top-level SolidTrace counters. Shutdown uses the SolidTrace
+timeout budget and closes the dedicated pool; job delivery, fencing, retries,
+and results are unchanged by transport health.
+
 SolidJobs emits the v1 lifecycle events `job.enqueued`, `job.journaled`,
 `job.reserved`, `job.started`, `job.completed`, `job.failed`,
 `job.retry_scheduled`, `job.dead`, `job.acknowledged`, and `job.recovered`.
