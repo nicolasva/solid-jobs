@@ -76,6 +76,23 @@ class InstrumentationTest < Minitest::Test
     assert_match(/telemetry failed/, output.string)
   end
 
+  def test_execution_halt_from_instrumentation_is_not_swallowed
+    instrumenter = Class.new do
+      def self.instrument(_name, _payload)
+        raise SolidJobs::ExecutionHalt
+      end
+    end
+    SolidJobs.instrumenter = instrumenter
+
+    assert_raises(SolidJobs::ExecutionHalt) do
+      SolidJobs::Instrumentation.emit(
+        SolidJobs.config,
+        :started,
+        { "id" => "job-1", "task" => "ExampleJob", "channel" => "default" },
+      )
+    end
+  end
+
   def test_ractor_snapshot_preserves_identity_and_shareable_instrumenter
     SolidJobs.instrumenter = FailingInstrumenter
     snapshot = SolidJobs.config.ractor_snapshot
@@ -125,6 +142,33 @@ class InstrumentationTest < Minitest::Test
 
     assert_kind_of String, job_id
     assert_equal 1, SolidJobs::Lab.captured_for(ExampleJob).size
+  end
+
+  def test_failed_recovery_does_not_emit_a_recovered_event
+    recorder = RecordingInstrumenter.new
+    claimed_key = SolidJobs::Keyspace.claimed("remote:999999:dead", 0)
+    redis_pool = Object.new
+    redis_pool.define_singleton_method(:call) do |command, *_arguments|
+      case command
+      when "SCAN"
+        ["0", [claimed_key]]
+      when "HGET"
+        nil
+      when "EVAL"
+        raise SolidRedis::ConnectionError, "recovery unavailable"
+      end
+    end
+    config = Struct.new(:redis_pool, :instrumenter, :identity, :logger).new(
+      redis_pool,
+      recorder,
+      "local:123:producer",
+      Logger.new(StringIO.new),
+    )
+
+    assert_raises(SolidRedis::ConnectionError) do
+      SolidJobs::Recovery.new(config: config).call
+    end
+    assert_empty recorder.events
   end
 end
 

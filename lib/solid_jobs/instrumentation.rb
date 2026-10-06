@@ -34,10 +34,12 @@ module SolidJobs
       }.merge(attributes).reject { |_key, value| value.nil? }
       config.instrumenter.instrument(EVENTS.fetch(event), payload)
       true
-    rescue Exception => error # instrumentation must not affect job control flow
+    rescue ExecutionHalt
+      raise
+    rescue StandardError, ScriptError => error
       begin
         config.logger.warn("SolidJobs telemetry failed: #{error.class}: #{error.message}")
-      rescue Exception
+      rescue StandardError, ScriptError
         nil
       end
       false

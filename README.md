@@ -202,13 +202,16 @@ SolidJobs exposes an optional, Ractor-local instrumenter without depending on
 SolidTrace:
 
 ```ruby
-SolidJobs.instrumenter = SolidTrace
+SolidJobs.instrumenter = SolidTrace.instrumenter
 ```
 
 The default instrumenter is a no-op. A configured instrumenter must be
-Ractor-shareable before a conductor starts. Every telemetry call is isolated:
-instrumenter failures are logged when possible and never change publication,
-execution, retry, acknowledgement, recovery, or shutdown behavior.
+Ractor-shareable before a conductor starts. `SolidTrace.instrumenter` relays
+worker events to the pipeline configured in the calling Ractor; its relay is
+drained by SolidTrace flush/reconfiguration/shutdown. Every ordinary telemetry
+failure is logged when possible and never changes publication, execution,
+retry, acknowledgement, recovery, or shutdown behavior. Process-control
+interruptions still propagate so shutdown can requeue in-flight work.
 
 SolidJobs emits the v1 lifecycle events `job.enqueued`, `job.journaled`,
 `job.reserved`, `job.started`, `job.completed`, `job.failed`,
