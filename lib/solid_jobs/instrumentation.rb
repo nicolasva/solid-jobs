@@ -42,6 +42,8 @@ module SolidJobs
     rescue StandardError, ScriptError => error
       begin
         config.logger.warn("SolidJobs telemetry failed: #{error.class}: #{error.message}")
+      rescue ExecutionHalt
+        raise
       rescue StandardError, ScriptError
         nil
       end

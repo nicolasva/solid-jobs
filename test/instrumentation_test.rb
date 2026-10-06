@@ -93,6 +93,21 @@ class InstrumentationTest < Minitest::Test
     end
   end
 
+  def test_execution_halt_from_failure_logging_is_not_swallowed
+    logger = Object.new
+    logger.define_singleton_method(:warn) { |_message| raise SolidJobs::ExecutionHalt }
+    SolidJobs.config.logger = logger
+    SolidJobs.instrumenter = FailingInstrumenter
+
+    assert_raises(SolidJobs::ExecutionHalt) do
+      SolidJobs::Instrumentation.emit(
+        SolidJobs.config,
+        :started,
+        { "id" => "job-1", "task" => "ExampleJob", "channel" => "default" },
+      )
+    end
+  end
+
   def test_ractor_snapshot_preserves_identity_and_shareable_instrumenter
     SolidJobs.instrumenter = FailingInstrumenter
     snapshot = SolidJobs.config.ractor_snapshot
