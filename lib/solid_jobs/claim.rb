@@ -12,13 +12,14 @@ module SolidJobs
       if not payload then
         return nil
       end
-      if redis.call("exists", ARGV[5] .. redis.sha1hex(payload)) == 1 then
+      local job = cjson.decode(payload)
+      local publication = job["#{PublicationBarrier::FIELD}"]
+      if publication and redis.call("exists", ARGV[5] .. publication) == 1 then
         redis.call("rpush", KEYS[1], payload)
         return nil
       end
 
       redis.call("lpush", KEYS[2], payload)
-      local job = cjson.decode(payload)
       local attempt = redis.call("hincrby", KEYS[4], job["id"], 1)
       local metadata = {
         task_id = job["id"],
@@ -31,6 +32,19 @@ module SolidJobs
       }
       redis.call("hset", KEYS[3], ARGV[3], cjson.encode(metadata))
       return {payload, attempt}
+    LUA
+    POP_READY = <<~LUA.freeze
+      local payload = redis.call("rpop", KEYS[1])
+      if not payload then
+        return nil
+      end
+      local job = cjson.decode(payload)
+      local publication = job["#{PublicationBarrier::FIELD}"]
+      if publication and redis.call("exists", ARGV[1] .. publication) == 1 then
+        redis.call("rpush", KEYS[1], payload)
+        return nil
+      end
+      return payload
     LUA
     REGISTER = <<~LUA.freeze
       local attempt = redis.call("hincrby", KEYS[2], ARGV[1], 1)
@@ -70,6 +84,7 @@ module SolidJobs
       return removed
     LUA
     RESERVE_SHA = Digest::SHA1.hexdigest(RESERVE).freeze
+    POP_READY_SHA = Digest::SHA1.hexdigest(POP_READY).freeze
     REGISTER_SHA = Digest::SHA1.hexdigest(REGISTER).freeze
     ACK_SHA = Digest::SHA1.hexdigest(ACK).freeze
     REQUEUE_SHA = Digest::SHA1.hexdigest(REQUEUE).freeze
@@ -172,17 +187,7 @@ module SolidJobs
       if @claimed_key
         claim_reliable(channels)
       else
-        channels = channels.shuffle if @channel_order == :shuffle
-        result = @redis_pool.blocking_call(TIMEOUT, "BRPOP", *channels, TIMEOUT)
-        return unless result
-
-        source, payload = result
-        if publication_pending?(payload)
-          @redis_pool.call("RPUSH", source, payload)
-          sleep 0.01
-          return nil
-        end
-        record(payload, source.delete_prefix("#{Keyspace::PREFIX}:channel:"))
+        claim_unreliable(channels)
       end
     end
 
@@ -193,7 +198,7 @@ module SolidJobs
     private
 
     def record(payload, channel = nil, claim_token: nil, attempt: nil)
-      envelope = JSON.parse(payload)
+      envelope = PublicationBarrier.strip(JSON.parse(payload))
       channel ||= envelope.fetch("channel")
       claim_token, attempt = register(envelope, channel) unless claim_token
       claim = ClaimRecord.new(
@@ -222,7 +227,7 @@ module SolidJobs
       raw = @redis_pool.call("HGET", @claims_key, @processor_id)
       if raw
         metadata = JSON.parse(raw)
-        envelope = JSON.parse(payload)
+        envelope = PublicationBarrier.strip(JSON.parse(payload))
         if metadata["task_id"] == envelope["id"]
           return ClaimRecord.new(
             channel: envelope.fetch("channel"),
@@ -279,32 +284,33 @@ module SolidJobs
     end
 
     def claim_reliable(channels)
-      if @channel_order == :priority
-        channels.each do |source|
-          claim = claim_now(source)
-          return claim if claim
-        end
-        source = channels.first
-      else
-        source = next_channel(channels)
+      ordered_sources(channels).each do |source|
         claim = claim_now(source)
         return claim if claim
       end
-      payload = @redis_pool.blocking_call(
-        TIMEOUT,
-        "BLMOVE", source, @claimed_key, "RIGHT", "LEFT", TIMEOUT,
-      )
-      return unless payload
+      sleep(TIMEOUT)
+      nil
+    end
 
-      if publication_pending?(payload)
-        @redis_pool.pipelined do |pipeline|
-          pipeline.call("LREM", @claimed_key, 1, payload)
-          pipeline.call("RPUSH", source, payload)
-        end
-        sleep 0.01
-        return nil
+    def claim_unreliable(channels)
+      ordered_sources(channels).each do |source|
+        payload = pop_ready(source)
+        return record(payload, @channel_names.fetch(source)) if payload
       end
-      record(payload, @channel_names.fetch(source))
+      sleep(TIMEOUT)
+      nil
+    end
+
+    def ordered_sources(channels)
+      case @channel_order
+      when :priority
+        channels.uniq
+      when :shuffle
+        channels.shuffle.uniq
+      else
+        preferred = next_channel(channels)
+        ([preferred] + channels).uniq
+      end
     end
 
     def claim_now(source)
@@ -336,9 +342,18 @@ module SolidJobs
       )
     end
 
-    def publication_pending?(payload)
-      digest = Digest::SHA1.hexdigest(payload)
-      @redis_pool.call("EXISTS", Keyspace.publication(digest)) == 1
+    def pop_ready(source)
+      @redis_pool.call(
+        "EVALSHA", POP_READY_SHA, 1,
+        source, Keyspace::PUBLICATION_PREFIX,
+      )
+    rescue SolidRedis::CommandError => error
+      raise unless error.message.include?("NOSCRIPT")
+
+      @redis_pool.call(
+        "EVAL", POP_READY, 1,
+        source, Keyspace::PUBLICATION_PREFIX,
+      )
     end
 
     def refresh_paused

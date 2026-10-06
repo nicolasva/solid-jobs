@@ -126,6 +126,42 @@ class IntegrityCheckTest < Minitest::Test
     assert_claim_waits_for_publication_barrier(reliable: false)
   end
 
+  def test_weighted_claim_checks_other_channels_without_waiting
+    [true, false].each do |reliable|
+      config = SolidJobs::Blueprint.new(
+        redis: RedisTestServer.config,
+        channels: [["empty", 100], ["ready", 1]],
+      )
+      config.reliable_fetch = reliable
+      raw = JSON.generate(payload("ready-now").merge("channel" => "ready"))
+      config.redis_pool.call("LPUSH", SolidJobs::Keyspace.channel("ready"), raw)
+      claim = SolidJobs::Claim.new(
+        config,
+        identity: "host:123:identity",
+        processor_id: reliable ? 3 : 4,
+      )
+      started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+
+      assert_equal "ready-now", claim.next.envelope.fetch("id")
+      assert_operator Process.clock_gettime(Process::CLOCK_MONOTONIC) - started, :<, 0.1
+    ensure
+      config&.close
+    end
+  end
+
+  def test_stale_publication_owner_cannot_release_newer_barrier
+    first = SolidJobs::PublicationBarrier.prepare(publication: "same", owner: "first")
+    second = SolidJobs::PublicationBarrier.prepare(publication: "same", owner: "second")
+    SolidJobs::PublicationBarrier.mark(@config.redis_pool, first)
+    SolidJobs::PublicationBarrier.mark(@config.redis_pool, second)
+
+    assert_equal first.key, second.key
+    assert_equal 0, SolidJobs::PublicationBarrier.release(@config.redis_pool, [first])
+    assert_equal "second", @config.redis_pool.call("GET", first.key)
+    assert_equal 1, SolidJobs::PublicationBarrier.release(@config.redis_pool, [second])
+    assert_nil @config.redis_pool.call("GET", first.key)
+  end
+
   def test_stale_claim_cannot_complete_or_requeue_newer_generation
     identity = "host:123:identity"
     metadata_key = SolidJobs::Keyspace.claims(identity)
@@ -158,11 +194,15 @@ class IntegrityCheckTest < Minitest::Test
 
   def assert_claim_waits_for_publication_barrier(reliable:)
     @config.reliable_fetch = reliable
-    raw = JSON.generate(payload("publishing"))
-    marker = SolidJobs::Keyspace.publication(Digest::SHA1.hexdigest(raw))
+    barrier = SolidJobs::PublicationBarrier.prepare(publication: "publishing")
+    raw = JSON.generate(
+      payload("publishing").merge(
+        SolidJobs::PublicationBarrier::FIELD => barrier.publication,
+      ),
+    )
     channel = SolidJobs::Keyspace.channel("default")
     @config.redis_pool.pipelined do |pipeline|
-      pipeline.call("SET", marker, "1", "PX", 10_000)
+      SolidJobs::PublicationBarrier.mark(pipeline, barrier)
       pipeline.call("LPUSH", channel, raw)
     end
     claims = SolidJobs::Claim.new(
@@ -179,8 +219,10 @@ class IntegrityCheckTest < Minitest::Test
     )
     assert_nil @config.redis_pool.call("HGET", SolidJobs::Keyspace::ATTEMPTS, "publishing")
 
-    @config.redis_pool.call("DEL", marker)
-    assert_equal "publishing", claims.next.envelope.fetch("id")
+    SolidJobs::PublicationBarrier.release(@config.redis_pool, [barrier])
+    claim = claims.next
+    assert_equal "publishing", claim.envelope.fetch("id")
+    refute claim.envelope.key?(SolidJobs::PublicationBarrier::FIELD)
   end
 
   def payload(job_id)

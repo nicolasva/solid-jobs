@@ -2,13 +2,11 @@
 
 require "json"
 require "securerandom"
-require "digest/sha1"
 
 module SolidJobs
   class Publisher
     DEFAULT_CHUNK_SIZE = 1_000
     PLANNED_CHUNK_SIZE = 100
-    PUBLICATION_TIMEOUT_MS = 30_000
     Publication = Data.define(:task, :envelope, :redis_pool)
 
     def self.publish(envelope)
@@ -30,8 +28,8 @@ module SolidJobs
       return unless normalized
 
       validate_arguments!(normalized.fetch("arguments"))
-      ready = persist([normalized])
-      emit_persisted([normalized], ready)
+      barriers = persist([normalized])
+      emit_persisted([normalized], barriers)
       normalized.fetch("id")
     end
 
@@ -83,8 +81,8 @@ module SolidJobs
           end
           intercepted
         end
-        ready = persist(envelopes)
-        emit_persisted(envelopes, ready)
+        barriers = persist(envelopes)
+        emit_persisted(envelopes, barriers)
       end
       ids
     end
@@ -106,24 +104,25 @@ module SolidJobs
       end
 
       planned, ready = envelopes.partition { |envelope| envelope["run_at"] }
+      barriers = []
       @config.redis_pool.pipelined do |pipeline|
         planned.each do |envelope|
           score = envelope.delete("run_at")
           pipeline.call("ZADD", Keyspace::PLANNED, score, JSON.generate(envelope))
         end
-        persist_ready(pipeline, ready)
+        barriers = persist_ready(pipeline, ready)
       end
-      ready
+      barriers
     end
 
     private
 
-    def emit_persisted(envelopes, ready)
+    def emit_persisted(envelopes, barriers)
       envelopes.each do |envelope|
         Instrumentation.emit(@config, :enqueued, envelope)
         Instrumentation.emit(@config, :journaled, envelope)
       end
-      release_publications(ready)
+      release_publications(barriers)
     end
 
     def normalize(envelope)
@@ -150,27 +149,29 @@ module SolidJobs
     end
 
     def persist_ready(pipeline, envelopes)
+      barriers = []
       envelopes.group_by { |envelope| envelope.fetch("channel") }.each do |channel, group|
         pipeline.call("SADD", Keyspace::CHANNELS, channel)
         queued_ms = Utilities.realtime_milliseconds
         encoded = group.map do |envelope|
           envelope["queued_ms"] = queued_ms
+          envelope[PublicationBarrier::FIELD] = SecureRandom.hex(16)
           JSON.generate(envelope)
         end
-        encoded.each do |payload|
-          pipeline.call("SET", publication_key(payload), "1", "PX", PUBLICATION_TIMEOUT_MS)
+        group.zip(encoded).each do |envelope, _payload|
+          barrier = PublicationBarrier.prepare(
+            publication: envelope.fetch(PublicationBarrier::FIELD),
+          )
+          PublicationBarrier.mark(pipeline, barrier)
+          barriers << barrier
         end
         pipeline.call("LPUSH", Keyspace.channel(channel), *encoded)
       end
+      barriers
     end
 
-    def publication_key(payload)
-      Keyspace.publication(Digest::SHA1.hexdigest(payload))
-    end
-
-    def release_publications(envelopes)
-      keys = envelopes.map { |envelope| publication_key(JSON.generate(envelope)) }
-      @config.redis_pool.call("DEL", *keys) unless keys.empty?
+    def release_publications(barriers)
+      PublicationBarrier.release(@config.redis_pool, barriers)
     rescue SolidRedis::ConnectionError, SolidRedis::CommandError => error
       @config.logger.warn(
         "SolidJobs publication barrier release failed; waiting for expiry: #{error.class}: #{error.message}",
