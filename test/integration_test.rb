@@ -284,6 +284,45 @@ class IntegrationTest < Minitest::Test
     server&.stop if server&.running?
   end
 
+  def test_heartbeat_emits_process_worker_and_redis_observations
+    @config.instrumenter = RedisTelemetryInstrumenter
+    job_id = TelemetryBlockingJob.enqueue
+    server = SolidJobs::Conductor.new(config: @config).start
+    wait_until(5) do
+      observation_events.map { |event| event.fetch("name") }.uniq.sort ==
+        %w[process.observed ractor.observed redis.observed].sort &&
+        telemetry_names(job_id).include?("job.started")
+    end
+    wait_until(5) { telemetry_names(job_id).include?("job.acknowledged") }
+    before_quiet = observation_events.count { |event| event.fetch("name") == "ractor.observed" }
+    server.quiet
+    wait_until(2) do
+      observation_events.count { |event| event.fetch("name") == "ractor.observed" } > before_quiet
+    end
+    server.stop
+
+    events = observation_events
+    assert events.all? { |event| event.dig("payload", "node_id") == @config.identity }
+    ractors = events.select { |event| event.fetch("name") == "ractor.observed" }
+    assert_equal [0, 1], ractors.map { |event| event.dig("payload", "ractor_id") }.uniq.sort
+    assert(ractors.any? do |event|
+      event.dig("payload", "state") == "busy" &&
+        event.dig("payload", "current_job_ids") == [job_id]
+    end, ractors.inspect)
+    redis = events.select { |event| event.fetch("name") == "redis.observed" }
+    assert redis.any? { |event| event.dig("payload", "connection_status") == "connected" }
+    assert(redis.all? do |event|
+      event.dig("payload", "metrics").values.all? { |metric| metric["status"] == "unavailable" }
+    end)
+    states = ractors.map { |event| event.dig("payload", "state") }
+    activities = ractors.map { |event| event.dig("payload", "activity") }
+    assert_includes activities, "waiting"
+    assert_includes states, "stopping"
+    assert_includes states, "stopped"
+  ensure
+    server&.stop if server&.running?
+  end
+
   def test_inspection_api_reads_channels_and_timed_tasks
     RedisResultJob.enqueue(9)
     SolidJobs::Publisher.new(config: @config).publish(
@@ -656,7 +695,13 @@ class IntegrationTest < Minitest::Test
   def telemetry_events(job_id)
     @config.redis_pool.call("LRANGE", RedisTelemetryInstrumenter::KEY, 0, -1)
       .map { |raw| JSON.parse(raw) }
-      .select { |event| event.fetch("payload").fetch("job_id") == job_id }
+      .select { |event| event.fetch("payload")["job_id"] == job_id }
+  end
+
+  def observation_events
+    @config.redis_pool.call("LRANGE", RedisTelemetryInstrumenter::KEY, 0, -1)
+      .map { |raw| JSON.parse(raw) }
+      .select { |event| event.fetch("name").end_with?(".observed") }
   end
 
   def telemetry_names(job_id)

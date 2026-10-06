@@ -58,6 +58,7 @@ module SolidJobs
           quiet = false
           stopping = false
           work = {}
+          redis = {}
           processed = failed = 0
           next_beat = 0.0
           until stopping
@@ -66,6 +67,7 @@ module SolidJobs
                 case (message = messages.pop(true))
                 when :quiet
                   quiet = true
+                  heartbeat.observe(quiet: true, work: work, redis: redis)
                 when :stop
                   stopping = true
                 else
@@ -73,11 +75,21 @@ module SolidJobs
                   case event
                   when :work
                     work[arguments[0].to_s] = arguments[1]
+                    heartbeat.observe_ractor(
+                      arguments[0],
+                      arguments[1],
+                      job_id: arguments[2],
+                      quiet: quiet,
+                    )
                   when :done
                     work.delete(arguments[0].to_s)
+                    heartbeat.observe_ractor(arguments[0], nil, quiet: quiet)
                   when :stats
                     processed += arguments[0]
                     failed += arguments[1]
+                  when :redis
+                    redis[arguments[0].to_s] = arguments[1]
+                    heartbeat.observe_redis(arguments[0], arguments[1])
                   end
                 end
               end
@@ -87,7 +99,13 @@ module SolidJobs
             now = ::Process.clock_gettime(::Process::CLOCK_MONOTONIC)
             if now >= next_beat
               begin
-                heartbeat.beat(quiet: quiet, work: work, processed: processed, failed: failed)
+                heartbeat.beat(
+                  quiet: quiet,
+                  work: work,
+                  processed: processed,
+                  failed: failed,
+                  redis: redis,
+                )
                 processed = failed = 0
               rescue SolidRedis::ConnectionError => error
                 local_config.logger.warn("Redis heartbeat failed, retrying: #{error.class}: #{error.message}")
@@ -97,7 +115,15 @@ module SolidJobs
             sleep 0.05 unless stopping
           end
           begin
-            heartbeat.beat(quiet: quiet, work: work, processed: processed, failed: failed)
+            heartbeat.observe(quiet: quiet, work: work, redis: redis, phase: :stopping)
+            heartbeat.beat(
+              quiet: quiet,
+              work: work,
+              processed: processed,
+              failed: failed,
+              redis: redis,
+              phase: :stopped,
+            )
             heartbeat.cleanup
           rescue SolidRedis::ConnectionError => error
             local_config.logger.warn("Redis heartbeat cleanup failed: #{error.class}: #{error.message}")

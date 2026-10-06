@@ -221,6 +221,23 @@ arguments, business payloads, secrets, or textual logs. `node_id` is shared by
 all Ractors in a conductor; `ractor_id` and `worker_id` are integer processor
 identities. `reservation_id` is the reliable claim token.
 
+The heartbeat Ractor also samples and emits `process.observed`, one
+`ractor.observed` per logical processor, and one `redis.observed` per processor
+every five seconds. Process observations are limited to process CPU time, RSS,
+GC count/time, and total Ruby allocations. Sources are local Ruby/OS reads made
+outside worker Ractors. A source that has never succeeded is `unavailable`; a
+later failure preserves the last value as `stale` with its increasing age.
+SolidJobs never estimates CPU, memory, GC, or allocations per Ractor.
+
+Ractor observations expose only state, activity, integer
+`ractor_id`/`worker_id`/`executor_id`, and current job IDs. Quiet workers report
+`waiting`; shutdown reports `stopping` then `stopped` without inventing work.
+Redis connection state comes from worker operations already being performed:
+successful operations report `connected` and `SolidRedis::ConnectionError`
+reports `disconnected`. No monitoring-only Redis command is added. Redis
+latency, command, memory, and connection-count metrics remain explicitly
+`unavailable` until a reliable source exists.
+
 **SolidTrace** is a statistics and observability tool for SolidJobs. It shows
 real-time SolidJobs metrics while your application runs.
 

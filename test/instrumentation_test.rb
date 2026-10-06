@@ -215,6 +215,182 @@ class InstrumentationTest < Minitest::Test
     assert_empty recorder.events
     assert_match(/telemetry failed/, output.string)
   end
+
+  def test_process_observations_cache_success_and_report_stale_after_failure
+    now = 10.0
+    cpu_values = [1.5, RuntimeError.new("clock unavailable")]
+    sources = {
+      cpu_time: -> {
+        value = cpu_values.shift
+        raise value if value.is_a?(Exception)
+
+        value
+      },
+      rss: -> { raise "unsupported" },
+      gc_count: -> { 2 },
+      gc_time: -> { 3 },
+      allocations: -> { 4 },
+    }
+    observations = SolidJobs::Observations.new(
+      clock: -> { now },
+      sources: sources,
+    )
+
+    first = observations.process(node_id: "node", observed_at: now)
+    now = 13.25
+    second = observations.process(node_id: "node", observed_at: now)
+
+    assert_equal "available", first.dig(:metrics, :cpu_time, :status)
+    assert_equal "unavailable", first.dig(:metrics, :rss, :status)
+    assert_nil first.dig(:metrics, :rss, :value)
+    assert_equal "stale", second.dig(:metrics, :cpu_time, :status)
+    assert_equal 1.5, second.dig(:metrics, :cpu_time, :value)
+    assert_equal 10.0, second.dig(:metrics, :cpu_time, :observed_at)
+    assert_equal 3.25, second.dig(:metrics, :cpu_time, :age_seconds)
+    assert_equal "unavailable", second.dig(:metrics, :rss, :status)
+  end
+
+  def test_ractor_and_redis_observations_only_expose_authorized_state
+    observations = SolidJobs::Observations.new(sources: {
+      cpu_time: -> { 1 }, rss: -> { 1 }, gc_count: -> { 1 },
+      gc_time: -> { 1 }, allocations: -> { 1 },
+    })
+    work = {
+      "1" => JSON.generate(
+        "envelope" => {
+          "id" => "job-1",
+          "task" => "SecretJob",
+          "arguments" => ["secret"],
+        },
+      ),
+    }
+
+    ractors = observations.ractors(
+      node_id: "node",
+      concurrency: 2,
+      work: work,
+      observed_at: 20.0,
+    )
+    redis = observations.redis(
+      node_id: "node",
+      concurrency: 2,
+      statuses: {"1" => "disconnected"},
+      observed_at: 20.0,
+    )
+
+    assert_equal [0, 1], ractors.map { |payload| payload.fetch(:ractor_id) }
+    assert_equal ["idle", "busy"], ractors.map { |payload| payload.fetch(:state) }
+    assert_equal [[], ["job-1"]], ractors.map { |payload| payload.fetch(:current_job_ids) }
+    refute_includes ractors.join, "secret"
+    assert_equal %w[unavailable disconnected], redis.map { |payload| payload.fetch(:connection_status) }
+    assert(redis.all? do |payload|
+      payload.fetch(:metrics).values.all? do |metric|
+        metric.fetch(:status) == "unavailable" && metric.fetch(:value).nil?
+      end
+    end)
+  end
+
+  def test_heartbeat_publishes_each_observed_redis_transition
+    recorder = RecordingInstrumenter.new
+    config = Struct.new(:instrumenter, :logger).new(recorder, Logger.new(StringIO.new))
+    sources = {
+      cpu_time: -> { 1 }, rss: -> { 1 }, gc_count: -> { 1 },
+      gc_time: -> { 1 }, allocations: -> { 1 },
+    }
+    heartbeat = SolidJobs::Heartbeat.new(
+      config,
+      identity: "node",
+      started_at: 1.0,
+      concurrency: 1,
+      observations: SolidJobs::Observations.new(sources: sources),
+    )
+
+    heartbeat.observe_redis(0, "connected", observed_at: 2.0)
+    heartbeat.observe_redis(0, "disconnected", observed_at: 3.0)
+    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 1
+    sleep 0.001 while recorder.events.size < 2 &&
+      Process.clock_gettime(Process::CLOCK_MONOTONIC) < deadline
+
+    assert_equal(
+      %w[connected disconnected],
+      recorder.events.map { |_name, payload| payload.fetch(:connection_status) },
+    )
+    assert recorder.events.all? { |name, _payload| name == "redis.observed" }
+  ensure
+    heartbeat&.close
+  end
+
+  def test_observation_emission_does_not_wait_for_the_instrumenter
+    blocker = Queue.new
+    instrumenter = Object.new
+    instrumenter.define_singleton_method(:instrument) do |_name, _payload|
+      blocker.pop
+    end
+    config = Struct.new(:instrumenter, :logger).new(instrumenter, Logger.new(StringIO.new))
+    emitter = SolidJobs::ObservationEmitter.new(config, capacity: 2)
+
+    started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    assert emitter.emit("process.observed", {})
+    elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
+
+    assert_operator elapsed, :<, 0.05
+  ensure
+    blocker << true
+    emitter&.shutdown
+  end
+
+  def test_engine_reports_successful_and_failed_redis_operations_to_heartbeat
+    claims = Object.new
+    calls = 0
+    claims.define_singleton_method(:next) do
+      calls += 1
+      raise SolidRedis::ConnectionError, "offline" if calls == 2
+
+      nil
+    end
+    claims.define_singleton_method(:connection_failed!) { true }
+    messages = []
+    heartbeat = Object.new
+    heartbeat.define_singleton_method(:send) do |message, move: nil|
+      messages << message
+      move
+    end
+    engine = SolidJobs::Engine.allocate
+    engine.instance_variable_set(:@claims, claims)
+    engine.instance_variable_set(:@heartbeat, heartbeat)
+    engine.instance_variable_set(:@processor_id, 4)
+    engine.instance_variable_set(:@redis_status, nil)
+    engine.instance_variable_set(
+      :@config,
+      Struct.new(:logger).new(Logger.new(StringIO.new)),
+    )
+    engine.define_singleton_method(:sleep) { |_duration| nil }
+
+    assert_nil engine.send(:retrieve)
+    assert_nil engine.send(:retrieve)
+    assert_equal [[:redis, 4, "connected"], [:redis, 4, "disconnected"]], messages
+  end
+
+  def test_quiet_and_shutdown_worker_states_never_invent_jobs
+    observations = SolidJobs::Observations.new
+
+    quiet = observations.ractors(
+      node_id: "node", concurrency: 1, work: {}, quiet: true, observed_at: 1.0,
+    ).first
+    stopping = observations.ractors(
+      node_id: "node", concurrency: 1, work: {}, phase: :stopping, observed_at: 2.0,
+    ).first
+    stopped = observations.ractors(
+      node_id: "node", concurrency: 1, work: {}, phase: :stopped, observed_at: 3.0,
+    ).first
+
+    assert_equal ["idle", "waiting", []],
+      quiet.values_at(:state, :activity, :current_job_ids)
+    assert_equal ["stopping", "stopping", []],
+      stopping.values_at(:state, :activity, :current_job_ids)
+    assert_equal ["stopped", "stopped", []],
+      stopped.values_at(:state, :activity, :current_job_ids)
+  end
 end
 
 class ExampleJob

@@ -13,6 +13,7 @@ module SolidJobs
       @heartbeat = heartbeat
       @state_mutex = Mutex.new
       @busy = false
+      @redis_status = nil
     end
 
     def run(control:)
@@ -102,6 +103,7 @@ module SolidJobs
 
     def complete(claim)
       completed = claim.complete
+      report_redis("connected")
       unless completed
         @config.logger.warn(
           "Claim fencing rejected stale completion: #{claim.claim_token}",
@@ -117,6 +119,7 @@ module SolidJobs
       end
       completed
     rescue SolidRedis::ConnectionError => error
+      report_redis("disconnected")
       @claims.connection_failed!
       @config.logger.warn(
         "Redis completion failed; claimed task will be replayed: #{error.class}: #{error.message}",
@@ -135,8 +138,11 @@ module SolidJobs
     end
 
     def retrieve
-      @claims.next
+      claim = @claims.next
+      report_redis("connected")
+      claim
     rescue SolidRedis::ConnectionError => error
+      report_redis("disconnected")
       @claims.connection_failed!
       @config.logger.warn("Redis claim failed, retrying: #{error.class}: #{error.message}")
       sleep 0.1
@@ -147,13 +153,14 @@ module SolidJobs
       return unless @identity
 
       work = JSON.generate(
+        "job_id" => envelope["id"],
         "channel" => claim.channel,
         "envelope" => envelope,
         "started_at" => Time.now.to_f,
         "claim_token" => claim.claim_token,
         "attempt" => claim.attempt,
       )
-      send_heartbeat(:work, @processor_id, work)
+      send_heartbeat(:work, @processor_id, work, envelope["id"])
     end
 
     def clear_work
@@ -163,7 +170,14 @@ module SolidJobs
     end
 
     def send_heartbeat(*message)
-      @heartbeat&.send(message, move: true)
+      @heartbeat&.send(Utilities.shareable_copy(message))
+    end
+
+    def report_redis(status)
+      return if @redis_status == status
+
+      @redis_status = status
+      send_heartbeat(:redis, @processor_id, status)
     end
 
     def receive_commands(control)
