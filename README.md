@@ -316,6 +316,74 @@ class ProcessUserDataTask
 end
 ```
 
+#### Complete business service object execution (zero-leak memory architecture)
+
+In complex production monoliths, a single service object often encapsulates
+multiple `ActiveRecord` updates, pricing mutations, external API calls, and
+email notifications. Running this orchestration layer directly inside a
+`Ractor` triggers memory isolation failures.
+
+By serializing the service input into a lightweight, Ractor-safe **JSON
+payload**, SolidJobs can hand the task details to an isolated `bin/rails runner`
+sub-process.
+
+A major benefit is **automatic memory recovery**: once the service has
+allocated thousands of transient Ruby objects, the sub-process terminates and
+the operating system reclaims all of its memory, keeping the worker immune to
+memory bloat and leaks.
+
+Example: processing a heavy order checkout service.
+
+```ruby
+# frozen_string_literal: true
+
+require "open3"
+require "json"
+
+# Loaded explicitly (e.g., in config/boot.rb) outside of Zeitwerk.
+# SolidJobs executors run within Ractors where standard Rails autoloading is restricted.
+class ExecuteServiceTask
+  include SolidJobs::Task
+
+  # Dedicated high-priority business services channel
+  task_options channel: "services", max_failures: 2
+
+  APP_ROOT = File.expand_path("../..", __dir__).freeze
+
+  # The runner script parses the input JSON from the command line and executes the service
+  SCRIPT = <<~RUBY
+    require 'json'
+    params = JSON.parse(ARGV[0])
+    OrderCheckoutService.call(user_id: params['user_id'], cart_id: params['cart_id'])
+  RUBY
+
+  def execute_task(params_hash)
+    # Serialize the pure Hash into a strict JSON string for safe Ractor transmission
+    json_payload = params_hash.to_json
+
+    output, status = Open3.capture2e(
+      { "RAILS_ENV" => ENV.fetch("RAILS_ENV", "development") },
+      "bin/rails", "runner", SCRIPT, json_payload,
+      chdir: APP_ROOT
+    )
+
+    unless status.success?
+      raise "Service object execution failed: #{output.lines.first(5).join}"
+    end
+  end
+end
+```
+
+Enqueuing from your Rails application:
+
+```ruby
+# Construct a clean, 100% Ractor-safe arguments structure
+task_payload = { user_id: 42, cart_id: 891 }
+
+# Push into the Redis pipeline
+ExecuteServiceTask.enqueue(task_payload)
+```
+
 ## Commercial licensing & observability
 
 `SolidJobs` is open source under the **LGPL-3.0-or-later** license.
