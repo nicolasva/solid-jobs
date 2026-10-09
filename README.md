@@ -13,6 +13,39 @@ SolidJobs is **not compatible with Sidekiq**. It does not read Sidekiq queues,
 does not write Sidekiq payloads, and does not expose Sidekiq's job API. Existing
 applications and queued work must be migrated explicitly.
 
+## SolidTrace observability
+
+SolidJobs and SolidTrace have separate, complementary roles:
+
+- **SolidJobs** is the job runner. It enqueues and executes background tasks,
+  manages channels, retries, recovery, and worker Ractors.
+- **SolidTrace** is the observability dashboard. It consumes structured
+  lifecycle and operational telemetry emitted by SolidJobs and presents a
+  read-only view of job activity and system health.
+
+With SolidTrace, operators can inspect recent job executions and their
+observed lifecycle, monitor queues and worker Ractors, and review process
+resource usage, Redis health, telemetry freshness, and gaps that require
+resynchronization. SolidTrace does not enqueue, execute, retry, or control
+SolidJobs tasks; SolidJobs remains responsible for processing them. The
+dashboard is a separate Sinatra/Rack component that can be mounted in a Rails
+application, with host authentication and access protection supplied by that
+application.
+
+SolidTrace uses structured telemetry rather than job arguments or business
+payloads. Its trace views show retained lifecycle events and calculable
+durations, and identify missing or unavailable information instead of
+guessing. See the [SolidTrace project](https://github.com/nicolasva/SolidTrace)
+for more information.
+
+### SolidTrace dashboard
+
+![SolidTrace dashboard overview](https://github.com/nicolasva/SolidTrace/blob/main/file_00000000708882108cd8ae9a1106f601.jpg)
+
+![SolidTrace dashboard pages](https://github.com/nicolasva/SolidTrace/blob/main/SolidTrace%20Futuristic%20Dashboard%20Showcase.png)
+
+For access to SolidTrace, contact me at [nicolas.vandenbogaerde@gmail.com](mailto:nicolas.vandenbogaerde@gmail.com).
+
 ## Installation
 
 ```ruby
