@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.0] - 2026-10-12
+
+### Added
+
+- Warm worker routing: `enqueue` reroutes tasks holding non Ractor-safe state
+  (`Mutex`, `Thread`, `Fiber`, pools) to persistent Unix-socket workers
+  (`SolidJobsGenericExecutor`, `script/warm_worker.rb`).
+
 ## [0.4.2] - 2026-10-05
 
 ### Changed
