@@ -266,6 +266,83 @@ reports `disconnected`. No monitoring-only Redis command is added. Redis
 latency, command, memory, and connection-count metrics remain explicitly
 `unavailable` until a reliable source exists.
 
+## Transparent Ractor-safe hybrid execution (warm worker routing)
+
+Ractors enforce a shared-nothing model: referencing mutable global state, legacy
+connection pools, or thread-based dependencies (ActiveRecord, ActionMailer, gems
+using `Mutex`, `Thread` or `Fiber`) inside a Ractor raises
+`ArgumentError: can't share mutable object`. `SolidJobs::Task#enqueue` detects
+such tasks and reroutes them to a persistent **warm worker** process, so you do
+not have to rewrite them.
+
+### How routing is decided
+
+`requires_warm_pool?(arguments)` returns `true` only when **all** of these hold:
+
+1. `defined?(Rails)` is truthy.
+2. At least one argument is not `Ractor.shareable?`.
+3. The task class holds, in a class-level instance variable, a `Mutex`,
+   `Thread` or `Fiber`, or an object whose class name contains `Pool`.
+
+Otherwise `enqueue` runs the normal Ractor-native path. When routed, the
+arguments are converted to plain JSON data (deep-copied and frozen) and enqueued
+as a `SolidJobsGenericExecutor` task, which forwards them over a Unix socket.
+
+> Detection is heuristic and inspects only class-level instance variables. It
+> does not detect constants such as `ActiveRecord::Base` referenced inside
+> `execute_task`. Arguments must be JSON-serializable, and a task with
+> shareable arguments always stays Ractor-native.
+
+### Components
+
+- `app/jobs/solid_jobs_generic_executor.rb` — `SolidJobsGenericExecutor`
+  connects to `/tmp/solid_jobs_rails_<worker_id>.sock`, sends
+  `{"target_class": ..., "arguments": [...]}` as one JSON line, and returns the
+  result or raises `SolidJobsGenericExecutor::RemoteError`. The worker is chosen
+  as `hash(task name) % SOLID_JOBS_WARM_WORKERS` (default `1`). Require this file
+  explicitly (it is loaded automatically on first routing).
+- `script/warm_worker.rb` — a standalone process, run outside any Ractor, that
+  loads `config/environment.rb` from its working directory once, listens on the
+  socket, resolves the class with `Object.const_get`, runs `execute_task` (or
+  `perform`), and replies with `{"status":"ok","result":...}` or
+  `{"status":"error","error_class":...,"message":...}`. Requests are handled one
+  at a time per worker. The socket is created with mode `0600` and removed on
+  `INT`/`TERM`.
+
+### Running warm workers
+
+Warm workers are **not** spawned by `solid-jobs`; start and supervise them
+yourself (systemd, foreman, Procfile, ...), one per worker id, from the Rails
+root:
+
+```bash
+SOLID_JOBS_WARM_WORKERS=2 bundle exec ruby script/warm_worker.rb 0 &
+SOLID_JOBS_WARM_WORKERS=2 bundle exec ruby script/warm_worker.rb 1 &
+bundle exec solid-jobs --require ./config/environment --concurrency 8 --channel critical
+```
+
+The worker count used by the runner must match the number of workers started.
+The boot cost is paid once per worker; the process then stays warm. Memory is
+reclaimed only when a worker is restarted, so supervise and recycle them as you
+would any long-lived Rails process.
+
+### Example
+
+```ruby
+class SyncAccounts
+  include SolidJobs::Task
+  @lock = Mutex.new # class-level non-shareable state => warm worker routing
+
+  def execute_task(account_ids)
+    Account.where(id: account_ids).find_each(&:sync!)
+  end
+end
+
+SyncAccounts.enqueue([1, 2, 3]) # routed to the warm worker
+```
+
+Tests live in `test/warm_pool_test.rb` and spawn a real worker process.
+
 ## The Ractor concurrency challenge
 
 Core Rails frameworks like `ActiveRecord` and `ActionMailer` rely on global

@@ -1,9 +1,44 @@
 # frozen_string_literal: true
 
+require "json"
+
 module SolidJobs
   module Task
+    # Intercepts `enqueue` and reroutes non Ractor-safe tasks to the warm pool.
+    module WarmPoolRouting
+      NON_SHAREABLE_TYPES = [Mutex, Thread, Fiber].freeze
+
+      def enqueue(*arguments)
+        return super unless requires_warm_pool?(arguments)
+
+        require_relative "../../app/jobs/solid_jobs_generic_executor"
+        SolidJobsGenericExecutor.enqueue(
+          SolidJobsGenericExecutor.worker_id_for(name),
+          name,
+          Ractor.make_shareable(JSON.parse(JSON.generate(arguments))),
+        )
+      end
+
+      def requires_warm_pool?(args)
+        return false if equal?(defined?(::SolidJobsGenericExecutor) && ::SolidJobsGenericExecutor)
+        return false unless defined?(::Rails)
+
+        !args.all? { |argument| Ractor.shareable?(argument) } && holds_blocking_state?
+      end
+
+      private
+
+      def holds_blocking_state?
+        instance_variables.any? do |ivar|
+          value = instance_variable_get(ivar)
+          NON_SHAREABLE_TYPES.any? { |type| value.is_a?(type) } || value.class.name.to_s.include?("Pool")
+        end
+      end
+    end
+
     def self.included(base)
       base.extend(TaskMethods)
+      base.singleton_class.prepend(WarmPoolRouting)
       base.include(InstanceMethods)
       base.task_options
     end
