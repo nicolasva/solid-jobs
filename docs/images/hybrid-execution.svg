@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="843" height="570" viewBox="0 0 843 570" font-family="-apple-system, Helvetica, Arial, sans-serif">
+  <rect x="1" y="1" width="841" height="568" rx="16" fill="#fcfcfc" stroke="#e1e4e8"/>
+  <g stroke-width="3" fill="none">
+    <path d="M420 118V168" stroke="#98a2b8"/>
+    <path d="M247 210H190V326" stroke="#4aa35a"/>
+    <path d="M593 210H650V326" stroke="#cc7a2e"/>
+  </g>
+  <rect x="287" y="40" width="266" height="77" rx="22" fill="#e4e6eb" stroke="#98a2b8" stroke-width="3"/>
+  <text x="420" y="92" text-anchor="middle" font-size="28" font-weight="700" fill="#111">SolidJobs.enqueue</text>
+  <rect x="247" y="169" width="346" height="86" rx="22" fill="#eaecf0" stroke="#98a2b8" stroke-width="3"/>
+  <text x="420" y="205" text-anchor="middle" font-size="22" fill="#111">Heuristic detection of</text>
+  <text x="420" y="236" text-anchor="middle" font-size="22" fill="#111">Ractor compatibility</text>
+  <text x="143" y="296" text-anchor="middle" font-size="22" fill="#4aa35a">Native</text>
+  <text x="700" y="296" text-anchor="middle" font-size="22" fill="#cc7a2e">Fallback</text>
+  <rect x="60" y="326" width="325" height="145" rx="22" fill="#ecf2ea" stroke="#4aa35a" stroke-width="3"/>
+  <text x="222" y="371" text-anchor="middle" font-size="25" font-weight="700" fill="#111">Ractor worker</text>
+  <text x="222" y="410" text-anchor="middle" font-size="21" fill="#111">Memory isolation</text>
+  <text x="222" y="441" text-anchor="middle" font-size="21" fill="#111">Native execution</text>
+  <rect x="457" y="326" width="325" height="145" rx="22" fill="#f8eee8" stroke="#cc7a2e" stroke-width="3"/>
+  <text x="620" y="371" text-anchor="middle" font-size="25" font-weight="700" fill="#111">Warm worker</text>
+  <text x="620" y="410" text-anchor="middle" font-size="21" fill="#111">Rails process</text>
+  <text x="620" y="441" text-anchor="middle" font-size="21" fill="#111">Threads / Mutex / Fibers</text>
+  <text x="420" y="520" text-anchor="middle" font-size="21" fill="#6b7592">Communication over Unix socket + JSON</text>
+</svg>

@@ -266,14 +266,40 @@ reports `disconnected`. No monitoring-only Redis command is added. Redis
 latency, command, memory, and connection-count metrics remain explicitly
 `unavailable` until a reliable source exists.
 
-## Transparent Ractor-safe hybrid execution (warm worker routing)
+## Transparent Ractor-Safe Hybrid Execution Architecture
 
-Ractors enforce a shared-nothing model: referencing mutable global state, legacy
-connection pools, or thread-based dependencies (ActiveRecord, ActionMailer, gems
-using `Mutex`, `Thread` or `Fiber`) inside a Ractor raises
-`ArgumentError: can't share mutable object`. `SolidJobs::Task#enqueue` detects
-such tasks and reroutes them to a persistent **warm worker** process, so you do
-not have to rewrite them.
+Ractors enforce a strict shared-nothing model. Referencing mutable global
+state, legacy connection pools, or thread-based dependencies (**ActiveRecord**,
+**ActionMailer**, or gems built on `Mutex`, `Thread` and `Fiber`) inside a
+Ractor raises `ArgumentError: can't share mutable object`.
+
+SolidJobs handles this with an **adaptive router** in `enqueue`: tasks that are
+safe stay Ractor-native, and tasks that hold non-shareable state are
+transparently forwarded to a persistent **warm worker** process. You do not
+have to rewrite your gem stack.
+
+### How it works
+
+![SolidJobs hybrid execution: heuristic Ractor-compatibility detection routes to a Ractor worker (native) or a warm worker (fallback), communicating over a Unix socket with JSON](docs/images/hybrid-execution.svg)
+
+```text
+Task.enqueue(*args)
+   │
+   ├─ requires_warm_pool? = false ─► Ractor-native path (Redis → worker Ractors)
+   │
+   └─ requires_warm_pool? = true ──► JSON payload ─► SolidJobsGenericExecutor
+                                      ─► UNIXSocket ─► script/warm_worker.rb
+                                         (booted Rails process, runs the task)
+```
+
+| Context | Path | Typical tasks |
+|---|---|---|
+| Pure / stateless | Ractor-native, runs on all cores | CPU work, stateless I/O |
+| Holds a `Mutex`, `Thread`, `Fiber` or pool in class-level state | Warm worker over a Unix socket | Legacy gems, shared connection pools |
+
+The warm worker boots your application once and stays resident, so a routed job
+pays no per-job boot cost, only a local socket round trip. The latency has not
+been benchmarked.
 
 ### How routing is decided
 
@@ -326,7 +352,11 @@ The boot cost is paid once per worker; the process then stays warm. Memory is
 reclaimed only when a worker is restarted, so supervise and recycle them as you
 would any long-lived Rails process.
 
-### Example
+### Usage
+
+Include the task module as usual; the only requirement is that the class-level
+state that makes the task unsafe is visible to the detector, and that your
+arguments are JSON-serializable:
 
 ```ruby
 class SyncAccounts
