@@ -10,7 +10,7 @@ require "socket"
 worker_id = ARGV.fetch(0) { abort "Usage: #{$PROGRAM_NAME} WORKER_ID" }
 abort "WORKER_ID must be alphanumeric" unless worker_id.match?(/\A\w+\z/)
 
-path = "/tmp/solid_jobs_rails_#{worker_id}.sock"
+path = format(ENV.fetch("SOLID_JOBS_WARM_SOCKET", "/tmp/solid_jobs_rails_%s.sock"), worker_id)
 File.delete(path) if File.exist?(path)
 
 env_file = File.expand_path("config/environment.rb", Dir.pwd)

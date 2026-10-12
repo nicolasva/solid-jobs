@@ -325,7 +325,7 @@ as a `SolidJobsGenericExecutor` task, which forwards them over a Unix socket.
   connects to `/tmp/solid_jobs_rails_<worker_id>.sock`, sends
   `{"target_class": ..., "arguments": [...]}` as one JSON line, and returns the
   result or raises `SolidJobsGenericExecutor::RemoteError`. The worker is chosen
-  as `hash(task name) % SOLID_JOBS_WARM_WORKERS` (default `1`). Require this file
+  as `crc32(task name) % SOLID_JOBS_WARM_WORKERS` (default `1`, stable across processes). Require this file
   explicitly (it is loaded automatically on first routing).
 - `script/warm_worker.rb` — a standalone process, run outside any Ractor, that
   loads `config/environment.rb` from its working directory once, listens on the
@@ -372,6 +372,53 @@ SyncAccounts.enqueue([1, 2, 3]) # routed to the warm worker
 ```
 
 Tests live in `test/warm_pool_test.rb` and spawn a real worker process.
+
+### Hybrid architecture benchmark: Ractor vs Unix-socket IPC
+
+Run with `bundle exec rake hybrid` in `benchmark_sidekiq_solid-jobs`
+(Ruby 4.0.7, 4 Conductor Ractors, 4 warm workers, 10,000 mutable tasks per
+mode, all routed to the warm pool). Each latency series is stored as its own
+microsecond array and histogram, in JSON and Markdown under `results/`.
+
+- **Ractor pure:** time inside a Conductor Ractor between the `job.reserved`
+  event (payload returned by Redis) and `job.started` (just before the task
+  runs). SolidJobs reserves with an atomic Lua `RPOP`, not `BLPOP`, so this is
+  the closest equivalent.
+- **IPC roundtrip:** `UNIXSocket` open → status line read, reported by the
+  `warm_pool.roundtrip` instrumentation event of `SolidJobsGenericExecutor`.
+- `transport` uses zero-work warm tasks to isolate the pure socket cost;
+  `sustained` paces the 10,000 tasks linearly over 30 s; `burst` enqueues them
+  at once. In `sustained` and `burst`, each warm task sleeps 5 ms to simulate
+  service time, so their IPC roundtrip is dominated by that work (macOS timer
+  granularity makes it ≈6.4 ms).
+
+| Mode | Series | p50 (µs) | p95 (µs) | p99 (µs) |
+|---|---|---:|---:|---:|
+| Transport | Ractor pure | 9 | 21 | 39 |
+| Transport | IPC roundtrip (no work) | 43 | 77 | 192 |
+| Sustained 30 s (≈333 jobs/s) | Ractor pure | 25 | 51 | 119 |
+| Sustained 30 s (≈333 jobs/s) | IPC roundtrip (5 ms work) | 6,355 | 11,713 | 12,680 |
+| Burst | Ractor pure | 23 | 58 | 249 |
+| Burst | IPC roundtrip (5 ms work) | 6,426 | 12,522 | 13,183 |
+
+All 30,000 tasks completed with zero failures and **zero warm pool exhaustion
+events**: the 4 Conductor Ractors never have more requests in flight than there
+are warm workers. The pure socket overhead is tens of microseconds (p50 43 µs,
+p99 192 µs); the rest of the IPC latency is the task's own work in the warm
+worker.
+
+**Saturation (oversubscribed pool).** With 8 Ractors on a single warm worker, a
+30 ms timeout and 1,000 burst tasks, the pool is exhausted: 432 timeouts and 563
+refused connections (the worker's Unix socket listen backlog is full), only 5
+tasks completed on the first attempt, and the rest failed and went through
+SolidJobs retries. Exhaustion is counted as `timeout` + `refused` + `ok`
+roundtrips above `HYBRID_EXHAUSTION_MS`. Size the number of warm workers at
+least equal to the Conductor concurrency, and set `SOLID_JOBS_WARM_TIMEOUT`
+(default 30 s) accordingly. A timed-out request is not cancelled in the worker,
+so make routed tasks idempotent.
+
+*Environment: Ruby 4.0.7 (arm64-darwin27); SolidJobs 0.5.0; local loopback,
+synthetic work, single run per mode.*
 
 ## Commercial licensing & observability
 

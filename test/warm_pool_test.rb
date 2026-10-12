@@ -195,4 +195,26 @@ class WarmPoolTest < Minitest::Test
     assert Ractor.shareable?(routed_arguments.last)
     refute_same original.first, routed_arguments.last.first
   end
+
+  def test_roundtrip_is_instrumented
+    events = []
+    SolidJobs.config.instrumenter = Class.new do
+      define_singleton_method(:instrument) { |name, payload = nil, &block| events << [name, payload]; block&.call }
+    end
+    call("WarmEchoJob", 1)
+
+    name, payload = events.find { |event| event.first == "warm_pool.roundtrip" }
+    assert_equal "warm_pool.roundtrip", name
+    assert_equal "ok", payload[:status]
+    assert_operator payload[:duration], :>, 0
+  end
+
+  def test_worker_id_is_stable_across_processes
+    expected = SolidJobsGenericExecutor.worker_id_for("WarmMutexJob")
+    other = IO.popen([RbConfig.ruby, "-I#{File.join(ROOT, "lib")}", "-e",
+      'require "solid_jobs"; require "./app/jobs/solid_jobs_generic_executor"; print SolidJobsGenericExecutor.worker_id_for("WarmMutexJob")'],
+      chdir: ROOT, &:read)
+
+    assert_equal expected.to_s, other
+  end
 end
