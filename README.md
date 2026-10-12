@@ -373,90 +373,20 @@ SyncAccounts.enqueue([1, 2, 3]) # routed to the warm worker
 
 Tests live in `test/warm_pool_test.rb` and spawn a real worker process.
 
-## The Ractor concurrency challenge
+## Alternative: one-shot `bin/rails runner` for guaranteed memory reclamation
 
-Core Rails frameworks like `ActiveRecord` and `ActionMailer` rely on global
-variables, shared connection pools, and mutable global state. Referencing these
-modules directly inside a strict, isolated `Ractor` raises
-`ArgumentError: can't share mutable object`.
-
-To keep SolidJobs' Ractor-native execution while preserving your existing Rails
-business logic, use a **hybrid execution bridge**: delegate mutable work to an
-isolated sub-process via `bin/rails runner`. The worker stays Ractor-native and
-the heavy Rails operations are offloaded to the operating system layer.
-
-### Hybrid execution examples
+Warm workers (above) are the default answer to Ractor-incompatible Rails code.
+Because they stay resident, their memory is only released when you restart them.
+If a task allocates a very large number of transient objects and you want the
+operating system to reclaim everything after **every** job, delegate it to a
+short-lived `bin/rails runner` sub-process instead. You pay the Rails boot cost
+on each job in exchange for that guarantee.
 
 > **Important:** These task classes must be loaded explicitly (e.g., inside
 > `config/boot.rb`) outside of Zeitwerk management, as standard Rails
 > autoloading is restricted inside isolated Ractors.
 
-#### Isolated ActionMailer delivery task
-
-Trigger an email workflow using your existing Rails mailers and templates
-without memory isolation crashes:
-
-```ruby
-# frozen_string_literal: true
-
-require "open3"
-
-class SendEmailTask
-  include SolidJobs::Task
-
-  # Define your processing channel and failure thresholds
-  task_options channel: "default", max_failures: 3
-
-  APP_ROOT = File.expand_path("../..", __dir__).freeze
-  SCRIPT = "WelcomeMailer.hello(ARGV[0]).deliver_now"
-
-  def execute_task(recipient = "nicolas.vandenbogaerde@gmail.com")
-    output, status = Open3.capture2e(
-      { "RAILS_ENV" => ENV.fetch("RAILS_ENV", "development") },
-      "bin/rails", "runner", SCRIPT, recipient,
-      chdir: APP_ROOT
-    )
-
-    unless status.success?
-      raise "Email delivery failed: #{output.lines.grep_v(/^\s+from /).first(5).join}"
-    end
-  end
-end
-```
-
-#### Isolated ActiveRecord data sync task
-
-Load database records and run model mutations safely outside of the Ractor:
-
-```ruby
-# frozen_string_literal: true
-
-require "open3"
-
-class ProcessUserDataTask
-  include SolidJobs::Task
-
-  # Dedicated data synchronization channel
-  task_options channel: "data_sync", max_failures: 3
-
-  APP_ROOT = File.expand_path("../..", __dir__).freeze
-  SCRIPT = "User.find(ARGV[0]).update_metrics!"
-
-  def execute_task(user_id)
-    output, status = Open3.capture2e(
-      { "RAILS_ENV" => ENV.fetch("RAILS_ENV", "development") },
-      "bin/rails", "runner", SCRIPT, user_id.to_s,
-      chdir: APP_ROOT
-    )
-
-    unless status.success?
-      raise "ActiveRecord task failed: #{output.lines.grep_v(/^\s+from /).first(5).join}"
-    end
-  end
-end
-```
-
-#### Complete business service object execution (zero-leak memory architecture)
+### Complete business service object execution
 
 In complex production monoliths, a single service object often encapsulates
 multiple `ActiveRecord` updates, pricing mutations, external API calls, and
