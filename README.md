@@ -549,6 +549,35 @@ scales linearly across cores:
 | 4 | 593 | **604** | 50 |
 | 8 | 1,121 | **1,133** | 52 |
 
+### Stress test: concurrency 4, 8 and 16
+
+Run with `bundle exec rake stress` (5,000 pre-seeded jobs per case, medians of
+3 runs; `STRESS_CONCURRENCY`, `STRESS_REPETITIONS` and `STRESS_JOBS` override
+the defaults). It writes a Markdown report and a CSV for plotting curves.
+
+| Workload | Concurrency | Sidekiq (jobs/s) | SolidJobs (jobs/s) | Ratio | Sidekiq CPU | SolidJobs CPU |
+|---|---:|---:|---:|---:|---:|---:|
+| `process-cpu` | 4 | 295 | 1,021 | 3.5× | 100% | 358% |
+| `process-cpu` | 8 | 288 | 1,916 | 6.7× | 100% | 683% |
+| `process-cpu` | 16 | 293 | 2,117 | 7.2× | 100% | 875% |
+| `process-mixed` | 4 | 557 | 792 | 1.4× | 99% | 144% |
+| `process-mixed` | 8 | 567 | 1,656 | 2.9× | 101% | 305% |
+| `process-mixed` | 16 | 568 | 3,073 | 5.4× | 101% | 590% |
+| `process-io` | 4 | 595 | 574 | 0.96× | 21% | 28% |
+| `process-io` | 8 | 1,177 | 1,053 | 0.89× | 31% | 43% |
+| `process-io` | 16 | 2,295 | 1,932 | 0.84× | 48% | 75% |
+
+- Sidekiq stays flat near one core on CPU and mixed work at every level, while
+  SolidJobs keeps scaling; CPU gains flatten past 8 because the machine runs out
+  of cores.
+- On pure I/O (sleep) work, Sidekiq's threads are slightly faster at these
+  levels and use less CPU. SolidJobs is not faster on I/O-bound jobs.
+- Latencies in the report measure the drain of the pre-seeded backlog, not
+  steady-state latency. Per-job execution p99 stayed under 10 ms for both.
+- Zero errors in all 54 measurements.
+
+*Environment: Ruby 4.0.7 (arm64-darwin27); Sidekiq 8.1.7; SolidJobs 0.5.0.*
+
 ### Client Enqueue Throughput
 
 | Concurrency | Sidekiq Enqueue (jobs/s) | SolidJobs Enqueue (jobs/s) | Sidekiq Bulk (jobs/s) | SolidJobs Bulk (jobs/s) |
