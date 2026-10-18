@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- Backend adapters: `Backends::Base` contract, `Backends::Redis` and
+  `Backends::SolidEngine`; `config.backends`, `config.channel_backends` and
+  per-channel routing in `Publisher` and `Conductor`.
+- `config.execution_mode` (`:ractor` default, or `:thread`): non-Redis backend
+  workers run in Ractors, each with its own client, so the backend no longer
+  determines CPU parallelism.
+
 ## [0.5.0] - 2026-10-12
 
 ### Added

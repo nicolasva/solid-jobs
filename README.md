@@ -177,6 +177,120 @@ application-level deduplication when duplicate effects are unsafe.
 See [docs/reliability.md](docs/reliability.md) for the state machine, claim
 fencing, recovery rules, and Ruby Ractor caveats.
 
+## SolidEngine backend (SolidRedis or SolidEngine)
+
+SolidJobs is the job API; the storage and execution engine sits behind a
+backend adapter. Two adapters ship with the gem and your tasks do not change:
+
+```
+Application → SolidJobs → Backend adapter ─┬─ Backends::Redis       → SolidRedis → Redis
+                                           └─ Backends::SolidEngine → Rust server (Unix socket / TCP)
+```
+
+```ruby
+SolidJobs.configure do |config|
+  config.backend = :redis                    # default for every channel
+
+  config.backends = {
+    redis:  {adapter: :solid_redis, url: "redis://localhost:6379"},
+    engine: {adapter: :solid_engine, url: "unix:///var/run/solidengine.sock"},
+    # TCP also works: "tcp://127.0.0.1:7777"
+  }
+
+  # Per-channel routing: run both engines side by side and migrate gradually.
+  config.channel_backends = {"critical" => :redis, "default" => :engine, "bulk" => :engine}
+  config.channels = %w[critical default bulk]
+end
+```
+
+Setting only `config.backend = :solid_engine` and `config.url = "unix://..."`
+routes every channel to SolidEngine. Without these options nothing changes:
+the Redis path is the unchanged default.
+
+```ruby
+class SendEmail
+  include SolidJobs::Task
+  task_options channel: "critical"
+  def execute_task(user_id) = # ...
+end
+SendEmail.enqueue(42)   # Redis or SolidEngine, decided by the channel
+```
+
+`Conductor` starts Ractor processors for channels served by Redis and, in
+the same process, `concurrency` workers per non-Redis backend (one connection
+each, lease keep-alive while a task runs). If every channel is
+routed to SolidEngine, no Ractor, heartbeat or Redis scheduler is started and
+Redis is not required.
+
+### Backend contract
+
+`SolidJobs::Backends::Base` defines `enqueue`, `schedule(at:)`, `claim(channel)`,
+`ack(claim)`, `retry_job(claim, delay:)`, `fail_job`, `get_job`, `recover`,
+`capabilities` and `supports?`. A *claim* is the object returned by `claim`; it
+carries the reservation and fencing tokens, so `ack` and `retry_job` take the
+claim rather than a bare job id. Delivery is at-least-once on both adapters.
+
+Guarantees are not hidden. Operations a backend cannot honor raise
+`SolidJobs::Backends::NotSupported`; check `backend.supports?(:capability)`:
+
+| Capability | SolidRedis | SolidEngine |
+|---|---|---|
+| At-least-once, claim/ack, retries, scheduling | yes | yes |
+| Crash recovery | yes (node heartbeat scan) | yes (server-side lease expiry) |
+| Deduplication by job id | no | yes (`push` of an existing id is idempotent) |
+| Fencing tokens, lease extension | claim-token check only | yes (stale `ack`/`nack` is rejected) |
+| `get_job` by id, `cancel` | no | yes |
+| Durability | Redis persistence settings | `memory`, `balanced` or `strict` (server config) |
+
+Job ids must be UUIDs on SolidEngine (the default). Channel names map to
+engine channel ids by CRC32 unless `channel_ids:` is set in the backend spec:
+pin the mapping in production. Retry/discard follows the task options
+(`max_failures`, `retry_within`, `retry_delay`, `after_final_failure`);
+`discarded` archives stay Redis-only, SolidEngine keeps dead jobs itself.
+
+### Switching a channel
+
+Changing a channel's backend **does not migrate jobs already queued** in the
+old engine. Drain the old queue first (keep a worker on it until empty), then
+switch producers, then workers. To roll back, keep a worker on the SolidEngine
+channel until `stats` shows it is empty. Jobs must be idempotent in both
+directions.
+
+### Execution mode (independent of the backend)
+
+```ruby
+SolidJobs.configure do |config|
+  config.backend = :solid_engine
+  config.execution_mode = :ractor   # default; or :thread
+  config.concurrency = 4
+end
+```
+
+- `:ractor` (default): each worker is a Ractor that builds **its own**
+  SolidEngine client (own socket, no shared state, no central relay), so CPU
+  tasks run in parallel exactly as with Redis.
+- `:thread`: workers are threads of the main Ractor, bound by the GVL. Use it as
+  an explicit fallback when a task depends on code that is not Ractor-compatible
+  (non-shareable globals, unsupported native extensions, closures as callbacks).
+
+Redis channels always use Ractor processors. The mode is never changed silently
+by the backend choice.
+
+### Limits of this release
+
+The Python (`solid-jobs-py`) and Node.js (`solid-jobs-node`) packages contain
+the SolidEngine client but not yet this routing layer. `Catalog`, `Observations`,
+`Console` and `IntegrityCheck` still read Redis only.
+
+### SolidEngine benchmark
+
+Run `bundle exec rake comparison` in `benchmark_sidekiq_solid-jobs` with
+`SOLID_ENGINE_BIN` pointing at `solid-engine-server`; the `process-*`
+scenarios then add a `solid-jobs-engine` client (jobs through SolidEngine in
+`memory` durability, matching Redis without persistence; Redis only holds the
+benchmark counters). Results: see [Performance](#performance-solidjobs-vs-sidekiq)
+and [SolidEngine A/B on CPU tasks](#solidengine-ab-on-cpu-tasks-process-cpu).
+
 ## Node control
 
 ```ruby
@@ -453,7 +567,41 @@ scales linearly across cores:
 | 4 | 303 | 1,094 | 96.9% | 100.3% | 378.2% |
 | 8 | 302 | **2,170** | **96.2%** | 100.1% | **761.0%** |
 
-*At 8 concurrency, SolidJobs delivers **7.2× the throughput** of Sidekiq on pure CPU workloads.*
+*At 8 concurrency, SolidJobs delivers **7.2× the throughput** of Sidekiq on pure CPU workloads.
+This table comes from the Ruby 4.x campaign (see the environment line at the end
+of this section); it is not comparable with the Ruby 3.4.4 A/B table below.*
+
+### SolidEngine A/B on CPU tasks (`process-cpu`)
+
+Ruby 3.4.4, median of 6 runs (min–max), jobs/s. Same tasks, same repetitions;
+Sidekiq is one process with N threads.
+
+| Concurrency | Sidekiq (threads) | SolidJobs + Redis (Ractors) | SolidJobs + SolidEngine (Ractors) | SolidJobs + SolidEngine (threads) |
+|---:|---:|---:|---:|---:|
+| 1 | 202 (200–207) | 196 (192–199) | 209 (196–210) | 206 (205–208) |
+| 2 | 211 (209–213) | 296 (277–319) | **327** (310–337) | 205 (202–209) |
+| 4 | 210 (204–213) | **464** (281–497) | 401 (376–446) | 208 (203–209) |
+| 8 | 214 (211–216) | **313** (290–317) | 303 (299–329) | 209 (207–211) |
+
+Ruby-worker CPU-seconds per 1,000 jobs: 4.7–4.8 at concurrency 1 for all; at
+concurrency 8 Redis Ractors 24.3, Engine Ractors 25.8, Engine threads 4.8,
+Sidekiq 4.7. CPU covers the Ruby worker process only, not Redis or the
+SolidEngine server.
+
+Three separate conclusions:
+
+1. **Execution model:** with the same SolidEngine backend, Ractors reach 401 jobs/s
+   at concurrency 4 against 208 for threads (about 1.9×): the earlier plateau was the
+   GVL, not the server.
+2. **Backend:** SolidEngine and Redis are comparable with Ractors; ranges overlap
+   and neither wins at every concurrency.
+3. **SolidJobs vs Sidekiq:** about 1.5–2.2× at concurrency 2–4, about 1.4× at 8.
+   Beyond 4 workers, throughput drops and CPU per job rises sharply for both
+   backends (Ractor coordination cost); concurrency 4 is the sweet spot on this
+   machine.
+
+Not covered: several Sidekiq processes at equal CPU, and Ruby 4.x for this campaign.
+Full report: `benchmark_sidekiq_solid-jobs/results/ruby-3.4.4-process-cpu-ab.md`.
 
 ### Mixed Workload (`process-mixed` — CPU + I/O)
 

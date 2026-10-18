@@ -13,7 +13,8 @@ module SolidJobs
 
     attr_accessor :concurrency, :discarded_limit, :discarded_retention, :logger,
       :on_complex_arguments, :poll_interval_average, :shutdown_timeout,
-      :reliable_fetch, :retry_base_delay, :retry_max_delay, :instrumenter
+      :reliable_fetch, :retry_base_delay, :retry_max_delay, :instrumenter,
+      :backend, :url
     attr_reader :default_task_options, :error_handlers, :execute_interceptors,
       :publish_interceptors, :redis_config, :identity
 
@@ -39,6 +40,100 @@ module SolidJobs
       @identity = "#{Socket.gethostname}:#{::Process.pid}:#{SecureRandom.hex(6)}".freeze
       @instrumenter = NullInstrumenter
       @redis_pool = nil
+      @backend = :redis
+      @url = nil
+      @backends = {}
+      @execution_mode = :ractor
+      @channel_backends = {}
+      @backend_adapters = {}
+    end
+
+    REDIS_ADAPTERS = %i[redis solid_redis].freeze
+
+    EXECUTION_MODES = %i[ractor thread].freeze
+
+    attr_reader :backends, :channel_backends, :execution_mode
+
+    # How non-Redis backend workers run: :ractor (parallel, one client per
+    # Ractor) or :thread (GVL-bound). Redis channels always use Ractors.
+    def execution_mode=(mode)
+      mode = mode.to_sym
+      raise ArgumentError, "execution_mode must be :ractor or :thread" unless EXECUTION_MODES.include?(mode)
+
+      @execution_mode = mode
+    end
+
+    # Named backend definitions: { name => { adapter:, url:, ... } }.
+    def backends=(definitions)
+      close_adapters
+      @backends = definitions.to_h { |name, spec| [name.to_sym, spec.transform_keys(&:to_sym)] }
+    end
+
+    # Per-channel overrides of the default backend: { "bulk" => :solid_engine }.
+    def channel_backends=(mapping)
+      @channel_backends = mapping.to_h { |channel, name| [channel.to_s, name.to_sym] }
+    end
+
+    def backend_name_for(channel)
+      (channel_backends[channel.to_s] || backend).to_sym
+    end
+
+    def redis_backend?(name)
+      REDIS_ADAPTERS.include?((backends.dig(name.to_sym, :adapter) || name).to_sym)
+    end
+
+    # True when any channel can leave the default Redis path.
+    def routed?
+      !redis_backend?(backend) || !channel_backends.empty?
+    end
+
+    def backend_adapter_for(channel)
+      backend_adapter(backend_name_for(channel))
+    end
+
+    def backend_adapter(name)
+      @backend_adapters[name.to_sym] ||= build_backend(name)
+    end
+
+    # Channels served by Redis workers, and those served by other backends.
+    def redis_channel_entries
+      channel_entries.select { |channel, _| redis_backend?(backend_name_for(channel)) }
+    end
+
+    def engine_channel_entries
+      channel_entries - redis_channel_entries
+    end
+
+    # Adapter for :solid_engine (nil when it is not configured).
+    def engine_backend
+      name = (backends.keys + [backend, *channel_backends.values]).uniq.find do |candidate|
+        !redis_backend?(candidate)
+      end
+      backend_adapter(name) if name
+    end
+
+    # A fresh, unshared adapter instance (one connection per worker thread).
+    def build_backend(name)
+      name = name.to_sym
+      spec = backends[name] || {}
+      adapter = (spec[:adapter] || name).to_sym
+      case adapter
+      when :redis, :solid_redis
+        return Backends::Redis.new(config: self) unless spec[:url]
+
+        derived = Blueprint.new(redis: SolidRedis.config(url: spec[:url]), concurrency: concurrency)
+        derived.logger = logger
+        derived.instrumenter = instrumenter
+        Backends::Redis.new(config: derived, owned: true)
+      when :solid_engine
+        options = spec.except(:adapter)
+        options[:url] ||= url || ENV.fetch("SOLID_ENGINE_URL") do
+          raise ConfigurationError, "SolidEngine backend #{name.inspect} needs a url"
+        end
+        Backends::SolidEngine.new(**options)
+      else
+        raise ConfigurationError, "Unknown backend adapter #{adapter.inspect} for #{name.inspect}"
+      end
     end
 
     def redis=(configuration)
@@ -111,6 +206,7 @@ module SolidJobs
     def close
       @redis_pool&.close
       @redis_pool = nil
+      close_adapters
       self
     end
 
@@ -126,7 +222,7 @@ module SolidJobs
       Utilities.shareable_copy(
         redis_config: redis_config,
         concurrency: concurrency,
-        channels: channel_entries,
+        channels: redis_channel_entries,
         channel_order: channel_order,
         reliable_fetch: reliable_fetch,
         default_task_options: default_task_options,
@@ -141,6 +237,11 @@ module SolidJobs
         execute_interceptors: execute_interceptors.export,
         identity: identity,
         instrumenter: instrumenter,
+        backend: backend,
+        url: url,
+        backends: backends,
+        channel_backends: channel_backends,
+        execution_mode: execution_mode,
       )
     end
 
@@ -164,10 +265,20 @@ module SolidJobs
       config.execute_interceptors.import(snapshot.fetch(:execute_interceptors))
       config.instance_variable_set(:@identity, snapshot.fetch(:identity))
       config.instrumenter = snapshot.fetch(:instrumenter)
+      config.backend = snapshot.fetch(:backend)
+      config.url = snapshot.fetch(:url)
+      config.backends = snapshot.fetch(:backends)
+      config.channel_backends = snapshot.fetch(:channel_backends)
+      config.execution_mode = snapshot.fetch(:execution_mode)
       config
     end
 
     private
+
+    def close_adapters
+      @backend_adapters.each_value(&:close)
+      @backend_adapters = {}
+    end
 
     def normalize_channels(values)
       Array(values).map do |value|

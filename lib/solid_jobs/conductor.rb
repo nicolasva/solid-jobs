@@ -18,12 +18,19 @@ module SolidJobs
       @scheduler = nil
       @heartbeat = nil
       @started = false
+      @backend_threads = []
+      @backend_workers = []
+      @backend_ractors = []
+      @backend_stop = false
+      @backend_paused = false
       @identity = config.identity
       @started_at = Time.now.to_f
     end
 
     def start
       raise Error, "Conductor is already running" if @started
+
+      return start_backend_only if config.redis_channel_entries.empty?
 
       warn_ruby34_multi_ractor
       snapshot = Utilities.shareable_copy(
@@ -205,6 +212,7 @@ module SolidJobs
       end
       barrier.register!(@scheduler, scheduler_ready)
       barrier.run!
+      start_backend_workers
       @started = true
       config.fire(:startup, self)
       self
@@ -218,6 +226,8 @@ module SolidJobs
     def quiet
       return self unless @started
 
+      @backend_paused = true
+      @backend_ractors.each { |ractor| ractor.send(:quiet) }
       @ractors.each { |ractor| ractor.send(:quiet) }
       @heartbeat&.send(:quiet)
       config.fire(:quiet, self)
@@ -227,6 +237,7 @@ module SolidJobs
     def stop
       return [] unless @started
 
+      @backend_stop = true
       @ractors.each { |ractor| ractor.send(:stop) }
       @scheduler&.send(:stop)
       results = @ractors.each_with_index.map do |ractor, index|
@@ -235,6 +246,7 @@ module SolidJobs
       await_termination(@scheduler, "scheduler") if @scheduler
       @heartbeat&.send(:stop)
       await_termination(@heartbeat, "heartbeat") if @heartbeat
+      results.concat(stop_backend_workers)
       @ractors = []
       @scheduler = nil
       @heartbeat = nil
@@ -248,6 +260,109 @@ module SolidJobs
     end
 
     private
+
+    # Channels routed to a non-Redis backend run in Ractors (one client each)
+    # or, with execution_mode = :thread, in threads of this process.
+    def start_backend_workers
+      channels = config.engine_channel_entries
+      return if channels.empty?
+
+      @backend_stop = false
+      @backend_paused = false
+      groups = channels.group_by { |channel, _| config.backend_name_for(channel) }
+      if config.execution_mode == :ractor
+        start_backend_ractors(groups)
+      else
+        start_backend_threads(groups)
+      end
+    end
+
+    def start_backend_threads(groups)
+      groups.each do |name, scoped|
+        config.concurrency.times do |index|
+          worker = Backends::Worker.new(config: config, backend_name: name, channels: scoped, processor_id: index)
+          @backend_workers << worker
+          @backend_threads << Thread.new do
+            worker.run(stop: -> { @backend_stop }, paused: -> { @backend_paused })
+          end
+        end
+      end
+    end
+
+    def start_backend_ractors(groups)
+      snapshot = Utilities.shareable_copy(config.ractor_snapshot.merge(started_at: @started_at))
+      barrier = StartupBarrier.new(groups.size * config.concurrency)
+      groups.each do |name, scoped|
+        shared_channels = Utilities.shareable_copy(scoped)
+        config.concurrency.times do |index|
+          ready = barrier.channel
+          ractor = Ractor.new(snapshot, name, shared_channels, index, ready) do |settings, backend, entries, id, ready_port|
+            local_config = worker = nil
+            begin
+              started = SolidJobs::StartupBarrier.boot(ready_port) do
+                local_config = SolidJobs::Blueprint.from_ractor_snapshot(settings)
+                SolidJobs.use_config(local_config)
+                worker = SolidJobs::Backends::Worker.new(
+                  config: local_config, backend_name: backend, channels: entries, processor_id: id,
+                )
+              end
+              next :aborted unless started
+
+              control = ::Queue.new
+              Thread.new do
+                loop do
+                  command = Ractor.receive
+                  control << command
+                  break if command == :stop
+                end
+              end
+              state = {stop: false, paused: false}
+              drain = lambda do
+                until control.empty?
+                  case control.pop(true)
+                  when :stop then state[:stop] = true
+                  when :quiet then state[:paused] = true
+                  end
+                end
+              end
+              worker.run(stop: -> { drain.call; state[:stop] }, paused: -> { state[:paused] })
+              {processed: worker.processed, failed: worker.failed}
+            ensure
+              local_config&.close
+            end
+          end
+          barrier.register!(ractor, ready)
+          @backend_ractors << ractor
+        end
+      end
+      barrier.run!
+    rescue StandardError
+      barrier&.abort!
+      @backend_ractors = []
+      raise
+    end
+
+    # Without Redis channels no Ractor, heartbeat or Redis scheduler is needed.
+    def start_backend_only
+      start_backend_workers
+      @started = true
+      config.fire(:startup, self)
+      self
+    end
+
+    def stop_backend_workers
+      @backend_ractors.each { |ractor| ractor.send(:stop) }
+      ractor_results = @backend_ractors.each_with_index.map do |ractor, index|
+        await_termination(ractor, "backend worker #{index}")
+      end
+      @backend_ractors = []
+      deadline = config.shutdown_timeout + @stop_grace
+      @backend_threads.each { |thread| thread.join(deadline) || thread.kill }
+      results = @backend_workers.map { |worker| {processed: worker.processed, failed: worker.failed} }
+      @backend_threads = []
+      @backend_workers = []
+      ractor_results.compact + results
+    end
 
     RUBY34_MULTI_RACTOR_WARNING =
       "SolidJobs: Ruby %s can deadlock the whole VM on a Ractor GC barrier " \

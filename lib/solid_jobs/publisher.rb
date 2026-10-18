@@ -103,6 +103,22 @@ module SolidJobs
         end
       end
 
+      return persist_redis(envelopes) unless @config.routed?
+
+      envelopes.group_by { |envelope| @config.backend_name_for(envelope.fetch("channel")) }
+        .flat_map do |name, group|
+          adapter = @config.backend_adapter(name)
+          if adapter.is_a?(Backends::Redis) && adapter.config.equal?(@config)
+            persist_redis(group)
+          else
+            adapter.enqueue_many(group.each { |envelope| envelope["queued_ms"] = Utilities.realtime_milliseconds })
+          end
+        end
+    end
+
+    def persist_redis(envelopes)
+      return [] if envelopes.empty?
+
       planned, ready = envelopes.partition { |envelope| envelope["run_at"] }
       barriers = []
       @config.redis_pool.pipelined do |pipeline|
