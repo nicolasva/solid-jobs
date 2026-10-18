@@ -569,7 +569,7 @@ scales linearly across cores:
 
 *At 8 concurrency, SolidJobs delivers **7.2× the throughput** of Sidekiq on pure CPU workloads.
 This table comes from the Ruby 4.x campaign (see the environment line at the end
-of this section); it predates the A/B campaign below and was run on another machine setup.*
+of this section); it predates the A/B campaign below and is not directly comparable with it.*
 
 ### SolidEngine A/B on CPU tasks (`process-cpu`)
 
