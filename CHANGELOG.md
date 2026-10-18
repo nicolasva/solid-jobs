@@ -11,7 +11,8 @@ All notable changes to this project will be documented in this file.
   per-channel routing in `Publisher` and `Conductor`.
 - `config.execution_mode` (`:ractor` default, or `:thread`): non-Redis backend
   workers run in Ractors, each with its own client, so the backend no longer
-  determines CPU parallelism.
+  determines CPU parallelism. Ruby 4 is recommended: on 3.4.4 Ractor CPU cost per
+  job rises sharply beyond 4 workers.
 
 ## [0.5.0] - 2026-10-12
 

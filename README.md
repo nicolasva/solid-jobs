@@ -569,12 +569,25 @@ scales linearly across cores:
 
 *At 8 concurrency, SolidJobs delivers **7.2× the throughput** of Sidekiq on pure CPU workloads.
 This table comes from the Ruby 4.x campaign (see the environment line at the end
-of this section); it is not comparable with the Ruby 3.4.4 A/B table below.*
+of this section); it predates the A/B campaign below and was run on another machine setup.*
 
 ### SolidEngine A/B on CPU tasks (`process-cpu`)
 
-Ruby 3.4.4, median of 6 runs (min–max), jobs/s. Same tasks, same repetitions;
-Sidekiq is one process with N threads.
+Same tasks and repetitions for every client; median of 6 runs (min–max), jobs/s.
+Sidekiq is one process with N threads. Machine: 12 cores (8 performance).
+
+**Ruby 4.0.7**
+
+| Concurrency | Sidekiq (threads) | SolidJobs + Redis (Ractors) | SolidJobs + SolidEngine (Ractors) | SolidJobs + SolidEngine (threads) |
+|---:|---:|---:|---:|---:|
+| 1 | 286 (281–290) | 268 (263–272) | 289 (281–293) | 285 (281–291) |
+| 2 | 295 (289–299) | 511 (501–517) | **564** (546–573) | 293 (293–296) |
+| 4 | 298 (294–299) | 940 (936–949) | **1,100** (1,094–1,106) | 295 (292–296) |
+| 8 | 297 (290–299) | 1,646 (1,593–1,672) | **2,031** (1,959–2,122) | 288 (285–296) |
+
+Ruby-worker CPU-seconds per 1,000 jobs: 3.4–3.6 for every client at every concurrency.
+
+**Ruby 3.4.4**
 
 | Concurrency | Sidekiq (threads) | SolidJobs + Redis (Ractors) | SolidJobs + SolidEngine (Ractors) | SolidJobs + SolidEngine (threads) |
 |---:|---:|---:|---:|---:|
@@ -583,25 +596,26 @@ Sidekiq is one process with N threads.
 | 4 | 210 (204–213) | **464** (281–497) | 401 (376–446) | 208 (203–209) |
 | 8 | 214 (211–216) | **313** (290–317) | 303 (299–329) | 209 (207–211) |
 
-Ruby-worker CPU-seconds per 1,000 jobs: 4.7–4.8 at concurrency 1 for all; at
-concurrency 8 Redis Ractors 24.3, Engine Ractors 25.8, Engine threads 4.8,
-Sidekiq 4.7. CPU covers the Ruby worker process only, not Redis or the
-SolidEngine server.
+CPU-seconds per 1,000 jobs on Ruby 3.4.4: 4.7–4.8 at concurrency 1; at concurrency 8
+Redis Ractors 24.3, Engine Ractors 25.8, Engine threads 4.8, Sidekiq 4.7.
+
+CPU covers the Ruby worker process only, not Redis or the SolidEngine server.
 
 Three separate conclusions:
 
-1. **Execution model:** with the same SolidEngine backend, Ractors reach 401 jobs/s
-   at concurrency 4 against 208 for threads (about 1.9×): the earlier plateau was the
-   GVL, not the server.
-2. **Backend:** SolidEngine and Redis are comparable with Ractors; ranges overlap
-   and neither wins at every concurrency.
-3. **SolidJobs vs Sidekiq:** about 1.5–2.2× at concurrency 2–4, about 1.4× at 8.
-   Beyond 4 workers, throughput drops and CPU per job rises sharply for both
-   backends (Ractor coordination cost); concurrency 4 is the sweet spot on this
-   machine.
+1. **Execution model** (same SolidEngine backend): Ractors reach 2,031 jobs/s at
+   concurrency 8 on Ruby 4.0.7 against 288 for threads (about 7×). The earlier
+   plateau was the GVL, not the server.
+2. **Backend** (both in Ractors): on Ruby 4.0.7 SolidEngine leads Redis at every
+   concurrency with non-overlapping ranges (+10% at 2, +17% at 4, +23% at 8). On
+   Ruby 3.4.4 the two are comparable and ranges overlap.
+3. **SolidJobs vs Sidekiq:** on Ruby 4.0.7, 5.5× (Redis) and 6.8× (SolidEngine) at
+   concurrency 8 with flat CPU per job. On Ruby 3.4.4, 1.5–2.2× at concurrency 2–4,
+   then throughput drops and CPU per job rises sharply at 8 for both backends: the
+   Ractor coordination cost is a Ruby 3.4 runtime issue, so Ruby 4 is recommended.
 
-Not covered: several Sidekiq processes at equal CPU, and Ruby 4.x for this campaign.
-Full report: `benchmark_sidekiq_solid-jobs/results/ruby-3.4.4-process-cpu-ab.md`.
+Not covered: several Sidekiq processes at equal CPU, more than 8 performance cores.
+Reports: `benchmark_sidekiq_solid-jobs/results/ruby-{3.4.4,4.0.7}-process-cpu-ab.md`.
 
 ### Mixed Workload (`process-mixed` — CPU + I/O)
 
