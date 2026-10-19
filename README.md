@@ -664,6 +664,40 @@ backlogs, more than 8 performance cores, Ruby 3.4.4 with multi-process Sidekiq.
 Reports: `benchmark_sidekiq_solid-jobs/results/ruby-3.4.4-process-cpu-ab.md` and
 `ruby-4.0.7-process-cpu-procs.md`.
 
+### SolidEngine re-run (Ruby 4.0.7, all processing scenarios)
+
+Re-run with the Rust `solid-engine-server` (release build, `memory` durability):
+`process-cpu`, `process-io` and `process-mixed`, median of 6 runs, jobs/s, 0 errors
+everywhere. Sidekiq is one process with N threads; "Engine (threads)" is SolidJobs +
+SolidEngine with threads instead of Ractors.
+
+| Scenario | Concurrency | Sidekiq | SolidJobs + Redis | SolidJobs + SolidEngine | Engine (threads) |
+|---|---:|---:|---:|---:|---:|
+| `process-cpu` | 1 | 280 | 268 | **285** | 283 |
+| `process-cpu` | 2 | 292 | 516 | **565** | 288 |
+| `process-cpu` | 4 | 296 | 956 | **1,109** | 291 |
+| `process-cpu` | 8 | 292 | 1,635 | **2,021** | 286 |
+| `process-io` | 1 | 156 | 160 | **166** | 153 |
+| `process-io` | 2 | 308 | 300 | **322** | 300 |
+| `process-io` | 4 | 625 | 594 | **653** | 616 |
+| `process-io` | 8 | 1,221 | 1,076 | **1,242** | 1,200 |
+| `process-mixed` | 1 | 189 | 194 | **204** | 192 |
+| `process-mixed` | 2 | 402 | 396 | **426** | 398 |
+| `process-mixed` | 4 | 568 | 752 | **874** | 554 |
+| `process-mixed` | 8 | 572 | 1,471 | **1,763** | 552 |
+
+- CPU and mixed work: Ractors scale with SolidEngine (about 6.9× Sidekiq on
+  `process-cpu` and 3.1× on `process-mixed` at concurrency 8), while threads stay
+  GVL-bound at the Sidekiq level. SolidEngine is +20% to +24% ahead of Redis at
+  concurrency 8.
+- I/O work: all clients are within about 15% of each other because the wait
+  dominates; SolidEngine is on par with or slightly ahead of Sidekiq.
+- Footprint at `process-cpu`, concurrency 8 (workers / Redis / SolidEngine MiB):
+  Sidekiq 28.8 / 6.0 / –; SolidJobs + Redis 32.4 / 6.0 / –; SolidJobs + SolidEngine
+  54.8 / 6.0 / 7.3. Single process, N Ractors: the Sidekiq column is one process, not N.
+- Reports: `benchmark_sidekiq_solid-jobs/results/ruby-4.0.7-solid-engine.md` and
+  `.csv`. Command: `RBENV_VERSION=4.0.7 BENCHMARK_SCENARIOS=process-cpu,process-io,process-mixed bundle exec rake comparison`.
+
 ### Mixed Workload (`process-mixed` — CPU + I/O)
 
 | Concurrency | Sidekiq (jobs/s) | SolidJobs (jobs/s) | SolidJobs Scaling |
