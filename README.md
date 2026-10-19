@@ -698,6 +698,40 @@ SolidEngine with threads instead of Ractors.
 - Reports: `benchmark_sidekiq_solid-jobs/results/ruby-4.0.7-solid-engine.md` and
   `.csv`. Command: `RBENV_VERSION=4.0.7 BENCHMARK_SCENARIOS=process-cpu,process-io,process-mixed bundle exec rake comparison`.
 
+### SolidRedis backend re-run (solid-redis 1.0.13, Ruby 4.0.7)
+
+Second run with the local `solid-redis` 1.0.13 checkout wired into the benchmark
+bundle (`SOLID_REDIS_PATH`, default `../solid-redis`; the previous run resolved
+1.0.12 from rubygems). Only Sidekiq and SolidJobs + SolidRedis (Ractors) were run
+(144 cases, median of 6, 0 errors). The SolidEngine column is the run above, for
+comparison.
+
+| Scenario | Concurrency | Sidekiq | SolidJobs + SolidRedis | SolidJobs + SolidEngine |
+|---|---:|---:|---:|---:|
+| `process-cpu` | 1 | 282 | 266 | **285** |
+| `process-cpu` | 2 | 281 | 490 | **565** |
+| `process-cpu` | 4 | 292 | 946 | **1,109** |
+| `process-cpu` | 8 | 291 | 1,603 | **2,021** |
+| `process-io` | 1 | 154 | 160 | **166** |
+| `process-io` | 2 | 307 | 302 | **322** |
+| `process-io` | 4 | 604 | 566 | **653** |
+| `process-io` | 8 | 1,172 | 998 | **1,242** |
+| `process-mixed` | 1 | 185 | 192 | **204** |
+| `process-mixed` | 2 | 400 | 397 | **426** |
+| `process-mixed` | 4 | 566 | 746 | **874** |
+| `process-mixed` | 8 | 573 | 1,468 | **1,763** |
+
+- SolidRedis scales like SolidEngine but stays 10–20% below it on CPU and mixed work
+  (concurrency 8: 1,603 vs 2,021 on `process-cpu`, 1,468 vs 1,763 on `process-mixed`),
+  and is still 5.5× Sidekiq (threads) on `process-cpu` and 2.6× on `process-mixed`.
+- On `process-io` SolidRedis is within about 15% of Sidekiq and below it at
+  concurrency 4–8 (998 vs 1,172 at 8); SolidEngine matches or beats Sidekiq.
+- The SolidEngine column comes from a separate run on the same machine, so
+  differences of a few percent are within run-to-run noise.
+- Reports: `benchmark_sidekiq_solid-jobs/results/ruby-4.0.7-solid-redis-1.0.13.md`
+  and `.csv`. Command:
+  `RBENV_VERSION=4.0.7 BENCHMARK_CLIENTS=sidekiq,solid-jobs BENCHMARK_SCENARIOS=process-cpu,process-io,process-mixed bundle exec rake comparison`.
+
 ### Mixed Workload (`process-mixed` — CPU + I/O)
 
 | Concurrency | Sidekiq (jobs/s) | SolidJobs (jobs/s) | SolidJobs Scaling |
