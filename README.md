@@ -590,10 +590,24 @@ number of cores as SolidJobs' N Ractors.
 | 8 | 299 (298–301) | **2,156** (2,145–2,161) | 1,667 (1,644–1,691) | 2,058 (2,049–2,086) |
 
 Ruby-worker CPU-seconds per 1,000 jobs: 3.4–3.6 for every client at every concurrency.
-Peak RSS of the Ruby worker processes at concurrency 8 (summed over processes,
-excluding Redis and the SolidEngine server): Sidekiq N procs 309 MiB, SolidJobs +
-SolidEngine 65 MiB, SolidJobs + Redis 43 MiB, Sidekiq 1 proc 40 MiB. Summed RSS
-counts shared pages once per process, so it overstates multi-process Sidekiq.
+
+Whole-infrastructure memory and CPU (separate run of the same workload,
+`ruby-4.0.7-process-cpu-memory.md`; peak physical footprint measured with macOS
+`footprint` during the run, workers + Redis + SolidEngine server):
+
+| Concurrency | Client | jobs/s | Workers MiB | Redis MiB | SolidEngine MiB | Total MiB | MiB per 1,000 jobs/s | Total CPU-s/1,000 jobs |
+|---:|---|---:|---:|---:|---:|---:|---:|---:|
+| 4 | Sidekiq (N procs) | 1,090 | 138.0 | 5.8 | – | **143.9** | 132 | 3.55 |
+| 4 | SolidJobs + Redis | 954 | 32.3 | 5.8 | – | **38.1** | 40 | 3.55 |
+| 4 | SolidJobs + SolidEngine | 1,101 | 54.7 | 5.8 | 6.0 | **66.6** | 61 | 3.51 |
+| 8 | Sidekiq (N procs) | 2,025 | 243.7 | 6.1 | – | **249.8** | 123 | 3.83 |
+| 8 | SolidJobs + Redis | 1,663 | 32.4 | 6.1 | – | **38.6** | 23 | 3.65 |
+| 8 | SolidJobs + SolidEngine | 1,968 | 55.0 | 6.1 | 6.4 | **67.6** | 34 | 3.71 |
+
+At 8 workers SolidJobs + SolidEngine uses about 73% less physical memory than 8
+Sidekiq processes (68 vs 250 MiB) for 3% less throughput in this run, with a
+similar total CPU per job. Redis holds only the benchmark counters here (about
+2,000 queued jobs), so its footprint is small; a real backlog would grow it.
 
 **Ruby 3.4.4**
 
@@ -621,14 +635,13 @@ Separate conclusions:
    about 6.9× faster at concurrency 8, but that comparison uses one core for Sidekiq.
    Against N Sidekiq processes (same cores) throughput is **on par**: Sidekiq is
    within ±5% of SolidJobs + SolidEngine and ahead of SolidJobs + Redis at
-   concurrency 4–8. SolidJobs' measured advantage on this workload is the memory
-   footprint of the Ruby workers (one process with Ractors instead of N processes),
-   not throughput.
+   concurrency 4–8. SolidJobs' measured advantage on this workload is memory
+   (one process with Ractors instead of N processes), not throughput.
 4. **Ruby 3.4.4:** throughput drops and CPU per job rises sharply at concurrency 8 for
    both backends (Ractor coordination cost in the runtime); use Ruby 4.
 
-Not covered: memory of Redis and the SolidEngine server, physical footprint (PSS),
-more than 8 performance cores, Ruby 3.4.4 with multi-process Sidekiq.
+Not covered: Linux PSS (macOS `footprint` is used instead), memory under large
+backlogs, more than 8 performance cores, Ruby 3.4.4 with multi-process Sidekiq.
 Reports: `benchmark_sidekiq_solid-jobs/results/ruby-3.4.4-process-cpu-ab.md` and
 `ruby-4.0.7-process-cpu-procs.md`.
 
