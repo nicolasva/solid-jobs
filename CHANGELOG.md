@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-19
+
 ### Added
 
 - Real-process reliability tests for SolidEngine (worker SIGKILL, lost ACK, server
