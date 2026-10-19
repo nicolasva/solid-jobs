@@ -276,6 +276,25 @@ end
 Redis channels always use Ractor processors. The mode is never changed silently
 by the backend choice.
 
+### Reliability of the SolidEngine backend
+
+Guarantees (verified by `test/solid_engine_reliability_test.rb`, which uses real
+`solid-engine-server` and worker processes):
+
+- **At-least-once.** A task is acknowledged only after it succeeds. A worker that
+  dies (SIGKILL) mid-job loses its lease; the job is claimed again after
+  `lease_ms` and may run more than once. Exactly-once is **not** provided.
+- **Fencing.** A late ACK from a reservation that was reclaimed is rejected
+  (`stale_reservation`) and ignored by the worker.
+- **Connection errors.** An error while claiming or settling does not stop the
+  worker; an unsettled job is redelivered once its lease expires.
+- **Clean stop.** `stop` lets the active job finish and claims nothing new.
+- **Durability is a server setting.** With `durability = "memory"` (default) a
+  server restart loses every job. With `"strict"` or `"balanced"` and a
+  `data_dir`, confirmed jobs survive a SIGKILL of the server. The 60 s
+  retention of completed jobs is not a persistence guarantee.
+- **Recovery delay** is roughly `lease_ms` (default 30 s) after a worker crash.
+
 ### Limits of this release
 
 The Python (`solid-jobs-py`) and Node.js (`solid-jobs-node`) packages contain

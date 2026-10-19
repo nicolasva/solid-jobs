@@ -131,6 +131,9 @@ module SolidJobs
         raise unless error.code == :stale_reservation
 
         @config.logger.warn("Claim fencing rejected stale settlement: #{claim.id}")
+      rescue SystemCallError, IOError, EOFError, Backends::SolidEngine::ProtocolError => error
+        # Settlement unknown: leave the lease to expire so the job is redelivered (at-least-once).
+        @config.logger.warn("SolidJobs settlement failed, job will be redelivered: #{claim.id} #{error.class}: #{error.message}")
       end
 
       def start_keepalive(claim)

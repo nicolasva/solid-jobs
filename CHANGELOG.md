@@ -6,6 +6,9 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- Real-process reliability tests for SolidEngine (worker SIGKILL, lost ACK, server
+  restart, clean stop); `Backends::Worker` now survives connection errors while
+  settling a job and lets the lease expire for redelivery.
 - Backend adapters: `Backends::Base` contract, `Backends::Redis` and
   `Backends::SolidEngine`; `config.backends`, `config.channel_backends` and
   per-channel routing in `Publisher` and `Conductor`.
